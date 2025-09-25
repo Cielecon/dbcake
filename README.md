@@ -1,7 +1,11 @@
 # dbcake
 <img src="https://github.com/Cielecon/dbcake/blob/main/dbcake.png" width="300"/>
 
-
+a python database library that you can make your python projects easily with dbcake!
+**what does it do?** you can save your datas like *passwords* and *usernames* and lots of things... easily,
+with out any pain! and just in 3 lines!
+dbcake has high security and you can use it on **linux , windows , macos and ...**
+if you like this project , please star⭐ and send feedbacks :)
 
 # Learn how to use
 > [!TIP]
