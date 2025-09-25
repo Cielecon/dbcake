@@ -8,9 +8,11 @@ dbcake has high security and you can use it on **linux , windows , macos and ...
 if you like this project , please star⭐ and send feedbacks :)
 
 # Learn how to use
-> [!TIP]
-> import dbcake
 
+at first you need to import library
+```python
+import dbcake
+```
 now you used library! so lets set a table!
 
 ```python 
