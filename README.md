@@ -22,7 +22,7 @@ now you saved a username that it name is armin so lets get username
 
 
 ```python 
-> dbcake.db.get("username")
+dbcake.db.get("username")
 ```
 Output:
 
