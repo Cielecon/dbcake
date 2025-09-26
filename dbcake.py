@@ -1,503 +1,1105 @@
-from typing import Any, List, Optional, Tuple, Iterator, Dict
+from typing import Any, Dict, Optional, List, Tuple, Literal
 import os
-import sqlite3
-import threading
 import json
+import threading
 import pickle
 import base64
+import struct
+import shutil
+import hashlib
+import hmac
+import secrets
+import builtins
+import argparse
 import sys
 import subprocess
-import shutil
-import contextlib
-import datetime
+import getpass
+import time
 
-# module defaults
-_MODULE_DIR = os.path.dirname(__file__) or "."
-_DEFAULT_DB_PATH = os.path.join(_MODULE_DIR, "database.db")
-_DEFAULT_SECURE_DB_PATH = os.path.join(_MODULE_DIR, "database.high.db")
-
-# Optional cryptography
+# Optional cryptography imports
 try:
-    from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.backends import default_backend
-    _CRYPTO = True
+    _HAS_CRYPTO: bool = True
 except Exception:
-    Fernet = None
-    InvalidToken = Exception
-    PBDKF2HMAC = None
-    _CRYPTO = False
+    AESGCM = None
+    PBKDF2HMAC = None
+    hashes = None
+    default_backend = None
+    _HAS_CRYPTO = False
 
-class _AttrDB:
-    def __init__(self, path: str):
-        object.__setattr__(self, "_path", path)
-        object.__setattr__(self, "_conn", sqlite3.connect(path, check_same_thread=False))
-        object.__setattr__(self, "_lock", threading.RLock())
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL)")
-            self._conn.commit()
-
-    def _serialize(self, v: Any) -> bytes:
-        try:
-            s = json.dumps(v, ensure_ascii=False, separators=(",", ":"), default=None)
-            return b"J" + s.encode("utf-8")
-        except Exception:
-            p = pickle.dumps(v, protocol=pickle.HIGHEST_PROTOCOL)
-            return b"P" + base64.b64encode(p)
-
-    def _deserialize(self, blob: bytes) -> Any:
-        if not blob:
-            return None
-        head = blob[:1]; body = blob[1:]
-        if head == b"J":
-            try: return json.loads(body.decode("utf-8"))
-            except: pass
-        if head == b"P":
-            try: return pickle.loads(base64.b64decode(body))
-            except: return body
-        return blob
-
-    def _set(self, key: str, value: Any):
-        data = self._serialize(value)
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", (key, sqlite3.Binary(data)))
-            self._conn.commit()
-
-    def _get(self, key: str):
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute("SELECT value FROM kv WHERE key = ?", (key,))
-            row = cur.fetchone()
-            if not row:
-                raise KeyError(key)
-            return self._deserialize(row[0])
-
-    def _delete(self, key: str):
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute("DELETE FROM kv WHERE key = ?", (key,))
-            changed = cur.rowcount
-            self._conn.commit()
-        if changed == 0:
-            raise KeyError(key)
-
-    def _keys(self) -> List[str]:
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute("SELECT key FROM kv")
-            return [r[0] for r in cur.fetchall()]
-
-    # friendly API
-    def __setattr__(self, name: str, value: Any):
-        if name.startswith("_"): return object.__setattr__(self, name, value)
-        if not name.isidentifier(): raise AttributeError("Use simple identifier-like names.")
-        self._set(name, value)
-
-    def __getattr__(self, name: str):
-        if name.startswith("_"): raise AttributeError(name)
-        if not name.isidentifier(): raise AttributeError(name)
-        try: return self._get(name)
-        except KeyError: raise AttributeError(name)
-
-    def __delattr__(self, name: str):
-        if name.startswith("_"): return object.__delattr__(self, name)
-        try: self._delete(name)
-        except KeyError: raise AttributeError(name)
-
-    def keys(self) -> List[str]: return self._keys()
-    def items(self) -> Iterator[Tuple[str, Any]]:
-        for k in self._keys(): yield (k, getattr(self, k))
-    def preview(self, limit:int=10) -> List[Tuple[str, Any]]:
-        ks = self._keys(); out=[]
-        for k in ks[:limit]:
-            try: out.append((k, getattr(self,k)))
-            except: out.append((k,"<error>"))
-        return out
-    def export(self, dest:str) -> str:
-        src = getattr(self,"_path", None)
-        if not src or not os.path.exists(src): raise FileNotFoundError("DB file not found")
-        shutil.copy2(src, dest); return dest
-    def close(self):
-        try: self._conn.close()
-        except: pass
-    def __repr__(self):
-        try: c=len(self._keys())
-        except: c="?"
-        return f"<AttrDB keys={c} path={getattr(self,'_path',None)!r}>"
+# defaults and constants
+_MODULE_DIR = os.path.dirname(__file__) or "."
+_DEFAULT_DATA_PATH = os.path.join(_MODULE_DIR, "data.dbce")
+_LEN_STRUCT = struct.Struct("<I")
+_DB_HEADER = b"DBCEv1\n"
+StoreFormat = Literal["binary", "bits01", "dec", "hex"]
 
 # ---------------------------
-# Obfuscation fallback (educational)
+# cross-platform file lock
 # ---------------------------
-class _ObfuscateDB(_AttrDB):
-    def _xor(self, data: bytes, key: bytes) -> bytes:
-        return bytes([b ^ key[i % len(key)] for i,b in enumerate(data)])
-    def _serialize(self, v: Any) -> bytes:
-        raw = super()._serialize(v)
-        key = (getattr(self,"_path","").encode("utf-8") or b"kiddo-key")[:16]
-        x = self._xor(raw, key)
-        return b"O" + base64.b64encode(x)
-    def _deserialize(self, blob: bytes) -> Any:
-        if not blob: return None
-        head = blob[:1]; body = blob[1:]
-        if head != b"O": return super()._deserialize(blob)
-        try:
-            raw = base64.b64decode(body)
-            key = (getattr(self,"_path","").encode("utf-8") or b"kiddo-key")[:16]
-            r = self._xor(raw, key)
-            return super()._deserialize(r)
-        except Exception:
-            return "<corrupt>"
+class FileLock:
+    """
+    Cross-process file lock using a simple lock file.
+    POSIX uses fcntl.flock for advisory locking.
+    Windows uses msvcrt.locking.
+    """
 
-# ---------------------------
-# Secure DB (Fernet) if available
-# ---------------------------
-class _SecureDB(_AttrDB):
-    def __init__(self, path: str, fernet: "Fernet"):
-        super().__init__(path)
-        object.__setattr__(self, "_fernet", fernet)
-    def _serialize(self, v: Any) -> bytes:
-        plain = super()._serialize(v)
-        token = object.__getattribute__(self,"_fernet").encrypt(plain)
-        return b"E" + token
-    def _deserialize(self, blob: bytes) -> Any:
-        if not blob: return None
-        head = blob[:1]; body = blob[1:]
-        if head != b"E": return super()._deserialize(blob)
-        try:
-            plain = object.__getattribute__(self,"_fernet").decrypt(body)
-            return super()._deserialize(plain)
-        except InvalidToken:
-            raise ValueError("decryption failed")
+    def __init__(self, path: str, timeout: float = 10.0) -> None:
+        self.lockfile = path + ".lock"
+        self._f = None
+        self.timeout = timeout
 
-# helper for simple Fernet key from path (educational KDF; ok for learning — not recommended for real production)
-def _simple_fernet_key(path: str) -> bytes:
-    import hashlib
-    h = hashlib.sha256(path.encode("utf-8")).digest()[:32]
-    return base64.urlsafe_b64encode(h)
-
-# ---------------------------
-# Public kid-friendly wrapper
-# ---------------------------
-class PublicDB:
-    def __init__(self):
-        object.__setattr__(self, "_level", "normal")
-        object.__setattr__(self, "_impl", _AttrDB(_DEFAULT_DB_PATH))
-        object.__setattr__(self, "_paths", {"low": _DEFAULT_DB_PATH, "normal": _DEFAULT_DB_PATH, "high": _DEFAULT_SECURE_DB_PATH})
-    @property
-    def pw(self) -> str: return object.__getattribute__(self,"_level")
-    @pw.setter
-    def pw(self, v: str):
-        v = (v or "").lower()
-        if v not in ("low","normal","high"): raise ValueError("pw must be low|normal|high")
-        cur = object.__getattribute__(self,"_level")
-        if v == cur: return
-        object.__setattr__(self,"_level", v)
-        # switch impl
-        path = object.__getattribute__(self,"_paths")[v]
-        if v == "high":
-            if _CRYPTO:
-                key = _simple_fernet_key(path); f = Fernet(key); impl = _SecureDB(path, f)
-            else:
-                print("WARNING: cryptography not installed — 'high' uses educational obfuscation (NOT SECURE).")
-                impl = _ObfuscateDB(path)
-        else:
-            impl = _AttrDB(path)
-        # close old
-        try: object.__getattribute__(self,"_impl").close()
-        except: pass
-        object.__setattr__(self,"_impl", impl)
-
-    # attribute forwarding
-    def __setattr__(self, name: str, value: Any):
-        if name.startswith("_"): return object.__setattr__(self, name, value)
-        impl = object.__getattribute__(self,"_impl"); setattr(impl, name, value)
-    def __getattr__(self, name: str):
-        if name.startswith("_"): raise AttributeError(name)
-        impl = object.__getattribute__(self,"_impl")
-        try: return getattr(impl, name)
-        except AttributeError: raise AttributeError(name)
-    def __delattr__(self, name: str):
-        if name.startswith("_"): return object.__delattr__(self, name)
-        impl = object.__getattribute__(self,"_impl");
-        try:
-            delattr(impl, name);
-        except AttributeError: raise AttributeError(name)
-
-    # friendly helpers
-    def set(self, k, v): setattr(self, k, v)
-    def get(self, k, default=None):
-        try: return getattr(self,k)
-        except AttributeError: return default
-    def delete(self,k):
-        try: delattr(self,k)
-        except AttributeError: pass
-    def preview(self, limit=10): return object.__getattribute__(self,"_impl").preview(limit)
-    def export(self, dest): return object.__getattribute__(self,"_impl").export(dest)
-    def file(self): return getattr(object.__getattribute__(self,"_impl"), "_path", None)
-    def close(self): object.__getattribute__(self,"_impl").close()
-    def __repr__(self): return f"<PublicDB level={self.pw!r} impl={object.__getattribute__(self,'_impl')!r}>"
-
-# module db
-db = PublicDB()
-
-# ---------------------------
-# SQL Layer
-# - SQLDatabase: wraps sqlite connection and returns dict rows
-# - Table: simple query-builder: select/where/order/limit/insert/update/delete
-# ---------------------------
-def _row_to_dict(cursor: sqlite3.Cursor, row: sqlite3.Row) -> Dict[str, Any]:
-    return {k[0]: row[idx] for idx,k in enumerate(cursor.description)} if row is not None else None
-
-class SQLDatabase:
-    def __init__(self, path: str = _DEFAULT_DB_PATH, timeout: float = 5.0):
-        self.path = path
-        self._conn = sqlite3.connect(path, check_same_thread=False, timeout=timeout)
-        self._conn.row_factory = sqlite3.Row
-        self._lock = threading.RLock()
-
-    def close(self):
-        try: self._conn.close()
-        except: pass
-
-    def execute(self, sql: str, params: Optional[Tuple]=None) -> sqlite3.Cursor:
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute(sql, params or ())
-            self._conn.commit()
-            return cur
-
-    def executemany(self, sql: str, seq_params: List[Tuple]) -> sqlite3.Cursor:
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.executemany(sql, seq_params)
-            self._conn.commit()
-            return cur
-
-    def query(self, sql: str, params: Optional[Tuple]=None) -> List[Dict[str, Any]]:
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute(sql, params or ())
-            rows = cur.fetchall()
-            return [dict(r) for r in rows]
-
-    def fetchone(self, sql: str, params: Optional[Tuple]=None) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            cur = self._conn.cursor()
-            cur.execute(sql, params or ())
-            row = cur.fetchone()
-            return dict(row) if row is not None else None
-
-    @contextlib.contextmanager
-    def transaction(self):
-        with self._lock:
-            cur = self._conn.cursor()
+    def __enter__(self):
+        start = time.time()
+        # open lock file for reading/writing
+        # use binary mode so msvcrt works
+        while True:
             try:
-                cur.execute("BEGIN")
-            except:
+                self._f = builtins.open(self.lockfile, "a+b")
+                # attempt lock
+                if os.name == "nt":
+                    import msvcrt  # type: ignore
+                    # blocking lock; msvcrt.locking doesn't block on some windows versions
+                    try:
+                        msvcrt.locking(self._f.fileno(), msvcrt.LK_LOCK, 1)
+                        break
+                    except OSError:
+                        pass
+                else:
+                    import fcntl  # type: ignore
+                    try:
+                        fcntl.flock(self._f.fileno(), fcntl.LOCK_EX)
+                        break
+                    except OSError:
+                        pass
+            except Exception:
+                # race to create lock file - try again
                 pass
-            try:
-                yield
-            except:
-                self._conn.rollback()
-                raise
-            else:
-                self._conn.commit()
-
-    # create table helper (columns dict or SQL string)
-    def create_table(self, name: str, columns: Optional[Dict[str,str]] = None, if_not_exists: bool=True, raw_sql: Optional[str]=None):
-        if raw_sql:
-            self.execute(raw_sql)
-            return
-        if not columns:
-            raise ValueError("columns dict required when no raw_sql provided")
-        ine = "IF NOT EXISTS " if if_not_exists else ""
-        cols = ", ".join(f"{k} {v}" for k,v in columns.items())
-        sql = f"CREATE TABLE {ine}{name} ({cols})"
-        self.execute(sql)
-
-    def drop_table(self, name: str, if_exists: bool=True):
-        ine = "IF EXISTS " if if_exists else ""
-        self.execute(f"DROP TABLE {ine}{name}")
-
-    def table(self, name: str):
-        return Table(self, name)
-
-    def migrations(self, migrations: List[Tuple[str,str]], table_name: str = "_migrations"):
-        # very small migrations table mechanism
-        self.execute(f"CREATE TABLE IF NOT EXISTS {table_name} (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
-        applied = set(r["name"] for r in self.query(f"SELECT name FROM {table_name}"))
-        for name, sql in migrations:
-            if name in applied: continue
-            self.execute(sql)
-            now = datetime.datetime.utcnow().isoformat()
-            self.execute(f"INSERT INTO {table_name} (name, applied_at) VALUES (?, ?)", (name, now))
-
-class Table:
-    def __init__(self, db: SQLDatabase, name: str):
-        self.db = db
-        self.name = name
-        self._select_cols = "*"
-        self._where = None
-        self._params = ()
-        self._order = None
-        self._limit = None
-        self._joins = []  # list of raw join snippets
-
-    # builder methods (return self for chaining)
-    def select(self, columns: Optional[List[str]] = None):
-        self._select_cols = ", ".join(columns) if columns else "*"
+            # timeout check
+            if (time.time() - start) > self.timeout:
+                raise TimeoutError(f"Timeout acquiring lock {self.lockfile}")
+            time.sleep(0.05)
+        # keep file handle open while locked
         return self
 
-    def where(self, clause: str, params: Optional[Tuple] = None):
-        self._where = clause
-        self._params = params or ()
-        return self
-
-    def order_by(self, expr: str):
-        self._order = expr
-        return self
-
-    def limit(self, n: int):
-        self._limit = int(n)
-        return self
-
-    def join(self, join_sql: str):
-        """
-        Add a raw JOIN clause like:
-            'INNER JOIN other ON main.id = other.main_id'
-        or
-            'LEFT JOIN other ON ...'
-        Use this if you want joins. This builder is intentionally simple.
-        """
-        self._joins.append(join_sql)
-        return self
-
-    # materialize
-    def _build_sql(self) -> Tuple[str, Tuple]:
-        sql = f"SELECT {self._select_cols} FROM {self.name}"
-        if self._joins:
-            sql += " " + " ".join(self._joins)
-        if self._where:
-            sql += f" WHERE {self._where}"
-        if self._order:
-            sql += f" ORDER BY {self._order}"
-        if self._limit is not None:
-            sql += f" LIMIT {self._limit}"
-        return sql, self._params
-
-    def all(self) -> List[Dict[str, Any]]:
-        sql, params = self._build_sql()
-        return self.db.query(sql, params)
-
-    def one(self) -> Optional[Dict[str, Any]]:
-        prev_limit = self._limit
-        self._limit = 1
-        sql, params = self._build_sql()
-        rows = self.db.query(sql, params)
-        self._limit = prev_limit
-        return rows[0] if rows else None
-
-    def count(self, where: Optional[str]=None, params: Optional[Tuple]=None) -> int:
-        w = where or self._where
-        p = params or self._params
-        sql = f"SELECT COUNT(*) as cnt FROM {self.name}"
-        if w: sql += f" WHERE {w}"
-        row = self.db.fetchone(sql, p)
-        return int(row["cnt"]) if row else 0
-
-    def insert(self, values: Dict[str, Any]) -> int:
-        cols = ", ".join(values.keys())
-        placeholders = ", ".join(["?"] * len(values))
-        sql = f"INSERT INTO {self.name} ({cols}) VALUES ({placeholders})"
-        cur = self.db.execute(sql, tuple(values.values()))
-        return getattr(cur, "lastrowid", 0)
-
-    def insert_many(self, cols: List[str], rows: List[Tuple]):
-        placeholders = ", ".join(["?"] * len(cols))
-        sql = f"INSERT INTO {self.name} ({', '.join(cols)}) VALUES ({placeholders})"
-        self.db.executemany(sql, rows)
-
-    def update(self, values: Dict[str, Any], where: Optional[str]=None, params: Optional[Tuple]=None):
-        set_clause = ", ".join(f"{k}=?" for k in values.keys())
-        sql = f"UPDATE {self.name} SET {set_clause}"
-        if where:
-            sql += f" WHERE {where}"
-        all_params = tuple(values.values()) + tuple(params or ())
-        cur = self.db.execute(sql, all_params)
-        return getattr(cur, "rowcount", -1)
-
-    def delete(self, where: Optional[str]=None, params: Optional[Tuple]=None):
-        sql = f"DELETE FROM {self.name}"
-        if where:
-            sql += f" WHERE {where}"
-        cur = self.db.execute(sql, params or ())
-        return getattr(cur, "rowcount", -1)
-
-    def drop(self):
-        self.db.drop_table(self.name)
-
-# ---------------------------
-# Expose default SQL instance and factory
-# ---------------------------
-# default SQL instance points to the plain DB path (not secure blob store!)
-sql = SQLDatabase(_DEFAULT_DB_PATH)
-
-def open_sql(path: str = _DEFAULT_DB_PATH, *, timeout: float = 5.0) -> SQLDatabase:
-    """
-    Factory for SQLDatabase if you want a separate connection to any SQLite file.
-    """
-    return SQLDatabase(path, timeout=timeout)
-
-# ---------------------------
-# Hide helpers (preview/export/reveal)
-# ---------------------------
-class _Hide:
-    def __init__(self, getter):
-        self._get = getter
-    @property
-    def database(self):
-        return type("X", (), {"db": self._get()})()
-    def preview(self, limit:int=10):
-        inst = self._get()
-        return inst.preview(limit)
-    def export(self, dest: str):
-        inst = self._get()
-        return inst.export(dest)
-    def reveal(self, open_folder: bool = True):
-        path = self._get().file()
-        if not path: raise FileNotFoundError("No path available")
-        if not os.path.exists(path): raise FileNotFoundError(f"Path not found: {path!r}")
+    def __exit__(self, exc_type, exc, tb):
         try:
-            if sys.platform.startswith("win"):
-                target = os.path.dirname(path) if open_folder else path
-                os.startfile(target); return
-            if sys.platform == "darwin":
-                target = os.path.dirname(path) if open_folder else path
-                subprocess.call(["open", target]); return
-            target = os.path.dirname(path) if open_folder else path
-            subprocess.call(["xdg-open", target]); return
+            if self._f:
+                if os.name == "nt":
+                    import msvcrt  # type: ignore
+                    try:
+                        self._f.seek(0)
+                        msvcrt.locking(self._f.fileno(), msvcrt.LK_UNLCK, 1)
+                    except Exception:
+                        pass
+                else:
+                    import fcntl  # type: ignore
+                    try:
+                        fcntl.flock(self._f.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+                try:
+                    self._f.close()
+                except Exception:
+                    pass
+                # we keep lockfile around; removing can cause races on some platforms
+                self._f = None
         except Exception:
-            print("DB path:", path)
+            pass
 
-# module-level hide uses the kid-friendly db instance
-hide = type("H", (), {})()
-object.__setattr__(hide, "database", _Hide(lambda: db).database)
-object.__setattr__(hide, "preview", _Hide(lambda: db).preview)
-object.__setattr__(hide, "export", _Hide(lambda: db).export)
-object.__setattr__(hide, "reveal", _Hide(lambda: db).reveal)
+# ---------------------------
+# small helpers: serializers
+# ---------------------------
+def _json_safe(value: Any) -> Dict[str, Any]:
+    """Wrap a Python value into JSON-safe wrapper or a pickled base64 wrapper."""
+    try:
+        json.dumps(value)
+        return {"__fmt": "json", "v": value}
+    except Exception:
+        pickled = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        return {"__fmt": "pickle", "v": base64.b64encode(pickled).decode("ascii")}
 
-def run_demo_sql():
-    """Internal demo showing SQL usage — not run automatically."""
-    # create sample table
-    database = open_sql(":memory:")
-    database.create_table("people", {"id":"INTEGER PRIMARY KEY AUTOINCREMENT", "name":"TEXT", "age":"INTEGER"})
-    t = database.table("people")
-    t.insert({"name":"Alice","age":30})
-    t.insert({"name":"Bob","age":22})
-    rows = t.select(columns=["id","name","age"]).all() if hasattr(t,'select') else database.query("SELECT * FROM people")
-    print("rows:", rows)
-    database.close()
-__all__ = ["db", "hide", "sql", "open_sql", "SQLDatabase", "Table"]
+def _json_restore(obj: Any) -> Any:
+    if isinstance(obj, dict) and obj.get("__fmt") == "pickle":
+        b64 = obj.get("v", "")
+        try:
+            raw = base64.b64decode(b64.encode("ascii"))
+            return pickle.loads(raw)
+        except Exception:
+            return None
+    if isinstance(obj, dict) and obj.get("__fmt") == "json" and "v" in obj:
+        return obj["v"]
+    return obj
+
+# ---------------------------
+# format conversions
+# ---------------------------
+def _bytes_to_bits01(b: bytes) -> bytes:
+    return "".join(f"{byte:08b}" for byte in b).encode("ascii")
+
+def _bits01_to_bytes(s: bytes) -> bytes:
+    text = s.decode("ascii")
+    if len(text) % 8 != 0:
+        raise ValueError("bits01 string length not a multiple of 8")
+    out = bytearray()
+    for i in range(0, len(text), 8):
+        out.append(int(text[i : i + 8], 2))
+    return bytes(out)
+
+def _bytes_to_dec(b: bytes) -> bytes:
+    # each byte -> 3 decimal digits
+    return "".join(f"{byte:03d}" for byte in b).encode("ascii")
+
+def _dec_to_bytes(s: bytes) -> bytes:
+    text = s.decode("ascii")
+    if len(text) % 3 != 0:
+        raise ValueError("dec encoding length must be multiple of 3")
+    out = bytearray()
+    for i in range(0, len(text), 3):
+        out.append(int(text[i : i + 3]))
+    return bytes(out)
+
+def _bytes_to_hex(b: bytes) -> bytes:
+    return b.hex().encode("ascii")
+
+def _hex_to_bytes(s: bytes) -> bytes:
+    return bytes.fromhex(s.decode("ascii"))
+
+# ---------------------------
+# format helper map
+# ---------------------------
+_ENCODE_DISK = {
+    "binary": lambda b: b,
+    "bits01": _bytes_to_bits01,
+    "dec": _bytes_to_dec,
+    "hex": _bytes_to_hex,
+}
+_DECODE_DISK = {
+    "binary": lambda b: b,
+    "bits01": _bits01_to_bytes,
+    "dec": _dec_to_bytes,
+    "hex": _hex_to_bytes,
+}
+
+# ---------------------------
+# helpers for cross-platform reveal
+# ---------------------------
+def reveal_in_file_manager(path: str) -> None:
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    target = path if os.path.isdir(path) else os.path.dirname(path) or path
+    if sys.platform.startswith("win"):
+        os.startfile(target)  # type: ignore
+        return
+    if sys.platform == "darwin":
+        subprocess.call(["open", target])
+        return
+    try:
+        subprocess.call(["xdg-open", target])
+    except Exception:
+        print("Open folder:", target)
+
+# ---------------------------
+# low-level binary append-only store with .dbce header + format handling
+# ---------------------------
+class BinaryKV:
+    def __init__(self, path: str = _DEFAULT_DATA_PATH, store_format: StoreFormat = "binary") -> None:
+        self.path: str = path
+        self._lock = threading.RLock()
+        self._index: Dict[str, Optional[object]] = {}
+        self.store_format: StoreFormat = store_format
+        # ensure dir
+        dirn = os.path.dirname(self.path)
+        if dirn:
+            os.makedirs(dirn, exist_ok=True)
+        # create file with header
+        if not os.path.exists(self.path):
+            with builtins.open(self.path, "wb") as f:
+                f.write(_DB_HEADER)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+        # open file handle for reading/writing
+        self._open_file = builtins.open(self.path, "r+b")
+        # build index (no key material yet)
+        self._load_index(key_material=None)
+        self._open_file.seek(0, os.SEEK_END)
+
+    def _file_start_offset(self, f) -> int:
+        f.seek(0)
+        hdr = f.read(len(_DB_HEADER))
+        if hdr == _DB_HEADER:
+            return len(_DB_HEADER)
+        return 0
+
+    def _maybe_decode_format(self, payload: bytes) -> bytes:
+        """Convert disk payload to raw bytes depending on format."""
+        try:
+            return _DECODE_DISK[self.store_format](payload)
+        except Exception:
+            return payload
+
+    def _encode_for_disk(self, data: bytes) -> bytes:
+        """Convert raw bytes into disk payload per format."""
+        try:
+            return _ENCODE_DISK[self.store_format](data)
+        except Exception:
+            return data
+
+    def _load_index(self, key_material: Optional[bytes] = None) -> None:
+        idx: Dict[str, Optional[object]] = {}
+        try:
+            with FileLock(self.path):
+                with builtins.open(self.path, "rb") as f:
+                    start = self._file_start_offset(f)
+                    f.seek(start, os.SEEK_SET)
+                    while True:
+                        lenb = f.read(_LEN_STRUCT.size)
+                        if not lenb or len(lenb) < _LEN_STRUCT.size:
+                            break
+                        (ln,) = _LEN_STRUCT.unpack(lenb)
+                        payload_raw = f.read(ln)
+                        if len(payload_raw) < ln:
+                            break
+                        payload = self._maybe_decode_format(payload_raw)
+                        try:
+                            if payload[:1] == b"E":
+                                if key_material is not None and _HAS_CRYPTO:
+                                    try:
+                                        plain = _decrypt_record_bytes(payload, key_material)
+                                        obj = _parse_plaintext_record(plain)
+                                        k = obj.get("key")
+                                        if k is not None:
+                                            if obj.get("deleted", False):
+                                                idx[k] = None
+                                            else:
+                                                idx[k] = obj.get("value")
+                                    except Exception:
+                                        pass
+                                else:
+                                    pass
+                            else:
+                                obj = json.loads(payload.decode("utf-8"))
+                                key = obj.get("key")
+                                if obj.get("deleted", False):
+                                    idx[key] = None
+                                else:
+                                    idx[key] = _json_restore(obj.get("value"))
+                        except Exception:
+                            continue
+        except FileNotFoundError:
+            pass
+        self._index = idx
+
+    def _append_payload(self, raw_payload: bytes) -> None:
+        payload_to_write = self._encode_for_disk(raw_payload)
+        ln = len(payload_to_write)
+        data = _LEN_STRUCT.pack(ln) + payload_to_write
+        with FileLock(self.path):
+            with self._lock:
+                f = self._open_file
+                f.seek(0, os.SEEK_END)
+                f.write(data)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+
+    def _append_plain_record(self, key: str, wrapped_value: Dict[str, Any]) -> None:
+        rec = {"key": key, "deleted": False, "value": wrapped_value}
+        payload = json.dumps(rec, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._append_payload(payload)
+        with self._lock:
+            self._index[key] = _json_restore(wrapped_value)
+
+    def _append_delete_record(self, key: str) -> None:
+        rec = {"key": key, "deleted": True}
+        payload = json.dumps(rec, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._append_payload(payload)
+        with self._lock:
+            self._index[key] = None
+
+    def _append_encrypted_payload(self, encrypted_bytes: bytes) -> None:
+        self._append_payload(encrypted_bytes)
+        # index will be updated by caller with plaintext version
+
+    # high-level ops used by wrapper
+    def set_wrapped_plain(self, key: str, wrapped_value: Dict[str, Any]) -> None:
+        self._append_plain_record(key, wrapped_value)
+
+    def set_wrapped_encrypted(self, key: str, wrapped_value_bytes: bytes, encrypted_payload: bytes) -> None:
+        # encrypted_payload raw bytes (starts with b'E')
+        self._append_encrypted_payload(encrypted_payload)
+        with self._lock:
+            obj = _parse_plaintext_record(wrapped_value_bytes)
+            if obj["key"] is not None:
+                self._index[obj["key"]] = obj["value"]
+
+    def delete_key(self, key: str) -> None:
+        self._append_delete_record(key)
+
+    def get_indexed(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return self._index.get(key, default)
+
+    def contains(self, key: str) -> bool:
+        with self._lock:
+            return key in self._index and self._index.get(key) is not None
+
+    def keys(self) -> List[str]:
+        with self._lock:
+            return [k for k, v in self._index.items() if v is not None]
+
+    def preview(self, limit: int = 20) -> List[Tuple[str, Any]]:
+        with self._lock:
+            out: List[Tuple[str, Any]] = []
+            for k, v in list(self._index.items()):
+                if v is None:
+                    continue
+                out.append((k, v))
+                if len(out) >= limit:
+                    break
+            return out
+
+    def export(self, dest_path: str) -> str:
+        with FileLock(self.path):
+            with self._lock:
+                self._open_file.flush()
+                try:
+                    os.fsync(self._open_file.fileno())
+                except Exception:
+                    pass
+                shutil.copy2(self.path, dest_path)
+        return dest_path
+
+    def compact(self, key_material: Optional[bytes] = None) -> None:
+        with FileLock(self.path):
+            with self._lock:
+                tmp = self.path + ".compact.tmp"
+                with builtins.open(tmp, "wb") as tf:
+                    tf.write(_DB_HEADER)
+                    for k, v in self._index.items():
+                        if v is None:
+                            continue
+                        wrapped = _json_safe(v)
+                        plain_payload = json.dumps({"key": k, "deleted": False, "value": wrapped}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                        if key_material is not None and _HAS_CRYPTO:
+                            enc_payload = _encrypt_record_bytes(plain_payload, key_material)
+                            tf.write(_LEN_STRUCT.pack(len(enc_payload)))
+                            tf.write(self._encode_for_disk(enc_payload))
+                        else:
+                            tf.write(_LEN_STRUCT.pack(len(plain_payload)))
+                            tf.write(self._encode_for_disk(plain_payload))
+                    tf.flush()
+                    try:
+                        os.fsync(tf.fileno())
+                    except Exception:
+                        pass
+                # rotate files
+                self._open_file.close()
+                backup = self.path + ".bak"
+                try:
+                    os.replace(self.path, backup)
+                except Exception:
+                    try:
+                        os.remove(self.path)
+                    except Exception:
+                        pass
+                os.replace(tmp, self.path)
+                self._open_file = builtins.open(self.path, "r+b")
+                self._open_file.seek(0, os.SEEK_END)
+                # reload index with key_material if available
+                self._load_index(key_material=key_material)
+                try:
+                    os.remove(backup)
+                except Exception:
+                    pass
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                if self._open_file:
+                    self._open_file.flush()
+                    try:
+                        os.fsync(self._open_file.fileno())
+                    except Exception:
+                        pass
+                    self._open_file.close()
+            except Exception:
+                pass
+            self._open_file = None
+
+    def pretty_print_preview(self, limit: int = 10) -> None:
+        rows = self.preview(limit)
+        if not rows:
+            print("<empty>")
+            return
+        maxk = max(len(k) for k, _ in rows)
+        print("-" * (maxk + 2 + 40))
+        print(f"{'key'.ljust(maxk)} | value (repr up to 40 chars)")
+        print("-" * (maxk + 2 + 40))
+        for k, v in rows:
+            s = repr(v)
+            if len(s) > 40:
+                s = s[:37] + "..."
+            print(f"{k.ljust(maxk)} | {s}")
+        print("-" * (maxk + 2 + 40))
+
+# ---------------------------
+# encryption helpers
+# ---------------------------
+def _derive_key_from_passphrase(passphrase: str, salt: bytes, iterations: int = 390000) -> bytes:
+    if not _HAS_CRYPTO:
+        raise RuntimeError("cryptography required for PBKDF2 (preferred)")
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=iterations, backend=default_backend())
+    key = kdf.derive(passphrase.encode("utf-8"))
+    return key
+
+def _encrypt_record_bytes(plain_payload: bytes, key_material: bytes) -> bytes:
+    if not _HAS_CRYPTO:
+        raise RuntimeError("cryptography required for AES-GCM")
+    aesgcm = AESGCM(key_material)
+    nonce = secrets.token_bytes(12)
+    ciphertext = aesgcm.encrypt(nonce, plain_payload, None)
+    return b"E" + nonce + ciphertext
+
+def _decrypt_record_bytes(payload: bytes, key_material: bytes) -> bytes:
+    if not _HAS_CRYPTO:
+        raise RuntimeError("cryptography required for AES-GCM")
+    if not payload.startswith(b"E"):
+        raise ValueError("payload not encrypted")
+    data = payload[1:]
+    if len(data) < 12 + 16:
+        raise ValueError("payload too short")
+    nonce = data[:12]
+    ciphertext = data[12:]
+    aesgcm = AESGCM(key_material)
+    plain = aesgcm.decrypt(nonce, ciphertext, None)
+    return plain
+
+def _parse_plaintext_record(plain_bytes: bytes) -> Dict[str, Any]:
+    try:
+        obj = json.loads(plain_bytes.decode("utf-8"))
+        key = obj.get("key")
+        deleted = obj.get("deleted", False)
+        value = _json_restore(obj.get("value")) if not deleted else None
+        return {"key": key, "value": value, "deleted": deleted}
+    except Exception:
+        return {"key": None, "value": None, "deleted": False}
+
+# ---------------------------
+# fallback stdlib authenticated stream cipher (educational)
+# ---------------------------
+def _hmac_sha256(key: bytes, data: bytes) -> bytes:
+    return hmac.new(key, data, hashlib.sha256).digest()
+
+def _stdlib_encrypt(key_material: bytes, plaintext: bytes) -> bytes:
+    enc_key = key_material[:16]; mac_key = key_material[16:32]
+    nonce = secrets.token_bytes(16)
+    out = bytearray()
+    counter = 0
+    i = 0
+    while i < len(plaintext):
+        ctrb = counter.to_bytes(8, "big")
+        block = _hmac_sha256(enc_key, nonce + ctrb)
+        take = min(len(block), len(plaintext) - i)
+        for j in range(take):
+            out.append(plaintext[i + j] ^ block[j])
+        i += take
+        counter += 1
+    ciphertext = bytes(out)
+    tag = _hmac_sha256(mac_key, nonce + ciphertext)
+    return b"E" + nonce + ciphertext + tag
+
+def _stdlib_decrypt(key_material: bytes, payload: bytes) -> bytes:
+    if not payload.startswith(b"E"):
+        raise ValueError("not stdlib encrypted payload")
+    data = payload[1:]
+    if len(data) < 16 + 32:
+        raise ValueError("payload too short")
+    nonce = data[:16]; tag = data[-32:]; ciphertext = data[16:-32]
+    enc_key = key_material[:16]; mac_key = key_material[16:32]
+    expected = _hmac_sha256(mac_key, nonce + ciphertext)
+    if not hmac.compare_digest(expected, tag):
+        raise ValueError("bad tag")
+    out = bytearray()
+    counter = 0
+    i = 0
+    while i < len(ciphertext):
+        ctrb = counter.to_bytes(8, "big")
+        block = _hmac_sha256(enc_key, nonce + ctrb)
+        take = min(len(block), len(ciphertext) - i)
+        for j in range(take):
+            out.append(ciphertext[i + j] ^ block[j])
+        i += take
+        counter += 1
+    return bytes(out)
+
+# ---------------------------
+# DB wrapper (with rotation API)
+# ---------------------------
+class DB:
+    def __init__(self, backend: BinaryKV) -> None:
+        self._backend = backend
+        self._level: str = "normal"
+        self._passphrase: Optional[str] = None
+        self._keyfile: str = backend.path + ".key"
+        self._saltfile: str = backend.path + ".salt"
+        self._key_material: Optional[bytes] = None
+
+    def title(self, filename: str, store_format: Optional[StoreFormat] = None) -> None:
+        """Switch to another .dbce file. If store_format provided, create with that format."""
+        if not filename.endswith(".dbce"):
+            filename = filename + ".dbce"
+        new_path = filename if os.path.isabs(filename) else os.path.join(os.getcwd(), filename)
+        try:
+            self._backend.close()
+        except Exception:
+            pass
+        fmt = store_format or self._backend.store_format
+        new_backend = BinaryKV(new_path, store_format=fmt)
+        self._backend = new_backend
+        self._keyfile = new_backend.path + ".key"
+        self._saltfile = new_backend.path + ".salt"
+        if self._level == "high":
+            self._derive_key_material()
+            self._backend._load_index(key_material=self._key_material if _HAS_CRYPTO else None)
+        else:
+            self._backend._load_index(key_material=None)
+
+    def set_format(self, fmt: StoreFormat) -> None:
+        """Change store format for the current DB file (reopens backend and reloads index)."""
+        if fmt not in ("binary", "bits01", "dec", "hex"):
+            raise ValueError("format must be one of: binary, bits01, dec, hex")
+        current_path = self._backend.path
+        try:
+            self._backend.close()
+        except Exception:
+            pass
+        self._backend = BinaryKV(current_path, store_format=fmt)
+        self._keyfile = self._backend.path + ".key"
+        self._saltfile = self._backend.path + ".salt"
+        if self._level == "high":
+            self._derive_key_material()
+            self._backend._load_index(key_material=self._key_material if _HAS_CRYPTO else None)
+        else:
+            self._backend._load_index(key_material=None)
+
+    def set_passphrase(self, passphrase: str) -> None:
+        """Set in-memory passphrase (does not write it to disk)."""
+        self._passphrase = passphrase
+        if self._level == "high":
+            self._derive_key_material()
+            self._backend._load_index(key_material=self._key_material if _HAS_CRYPTO else None)
+
+    def clear_passphrase(self) -> None:
+        self._passphrase = None
+        self._key_material = None
+
+    def _derive_key_material(self) -> bytes:
+        if self._passphrase:
+            if os.path.exists(self._saltfile):
+                salt = builtins.open(self._saltfile, "rb").read()
+            else:
+                salt = secrets.token_bytes(16)
+                tmp = self._saltfile + ".tmp"
+                with builtins.open(tmp, "wb") as f:
+                    f.write(salt)
+                os.replace(tmp, self._saltfile)
+                try:
+                    os.chmod(self._saltfile, 0o600)
+                except Exception:
+                    pass
+            if _HAS_CRYPTO:
+                km = _derive_key_from_passphrase(self._passphrase, salt)
+            else:
+                km = hashlib.pbkdf2_hmac("sha256", self._passphrase.encode("utf-8"), salt, 200_000, dklen=32)
+            self._key_material = km
+            return km
+        # else use/create keyfile
+        if os.path.exists(self._keyfile):
+            km = builtins.open(self._keyfile, "rb").read()
+        else:
+            km = secrets.token_bytes(32)
+            tmp = self._keyfile + ".tmp"
+            with builtins.open(tmp, "wb") as f:
+                f.write(km)
+            os.replace(tmp, self._keyfile)
+            try:
+                os.chmod(self._keyfile, 0o600)
+            except Exception:
+                pass
+        self._key_material = km
+        return km
+
+    @property
+    def pw(self) -> str:
+        return self._level
+
+    @pw.setter
+    def pw(self, v: str) -> None:
+        v = (v or "normal").lower()
+        if v not in ("low", "normal", "high"):
+            raise ValueError("pw must be low|normal|high")
+        if v == self._level:
+            return
+        self._level = v
+        if v == "high":
+            self._derive_key_material()
+            self._backend._load_index(key_material=self._key_material if _HAS_CRYPTO else None)
+        else:
+            self._key_material = None
+            self._backend._load_index(key_material=None)
+
+    def set(self, key: str, value: Any) -> None:
+        if not isinstance(key, str):
+            raise TypeError("key must be a string")
+        wrapped = _json_safe(value)
+        plain_record = json.dumps({"key": key, "deleted": False, "value": wrapped}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if self._level == "high":
+            km = self._key_material or self._derive_key_material()
+            if _HAS_CRYPTO:
+                enc_payload = _encrypt_record_bytes(plain_record, km)
+            else:
+                enc_payload = _stdlib_encrypt(km, plain_record)
+            self._backend.set_wrapped_encrypted(key, plain_record, enc_payload)
+        else:
+            self._backend.set_wrapped_plain(key, wrapped)
+
+    def get(self, key: str, default: Optional[Any] = None) -> Any:
+        val = self._backend.get_indexed(key, None)
+        if val is not None:
+            return val
+        return default
+
+    def delete(self, key: str) -> bool:
+        existed = self._backend.contains(key)
+        self._backend.delete_key(key)
+        return existed
+
+    def __contains__(self, key: str) -> bool:
+        return self._backend.contains(key)
+
+    def keys(self) -> List[str]:
+        return self._backend.keys()
+
+    def preview(self, limit: int = 20) -> List[Tuple[str, Any]]:
+        return self._backend.preview(limit)
+
+    def export(self, dest: str) -> str:
+        return self._backend.export(dest)
+
+    def compact(self) -> None:
+        km = self._key_material if self._level == "high" else None
+        self._backend.compact(key_material=km)
+
+    def close(self) -> None:
+        self._backend.close()
+
+    # ---------- key rotation ----------
+    def rotate_key(self, new_passphrase: Optional[str] = None, interactive: bool = False) -> None:
+        """
+        Re-encrypt the whole DB using a new passphrase (or new keyfile).
+        - Must be in "high" mode (pw == 'high') and we must have key material to decrypt existing entries.
+        - If interactive=True and new_passphrase is None, prompts for the new passphrase (no echo).
+        - If new_passphrase is empty string, a new random keyfile is created instead (random keyfile).
+        """
+        if self._level != "high":
+            raise RuntimeError("rotate_key requires db.pw == 'high' (enable 'high' mode first)")
+
+        # ensure we have the old key material (decrypt ability)
+        if self._key_material is None:
+            # we may need to prompt for current passphrase
+            if interactive:
+                old_pass = getpass.getpass("Enter current passphrase to decrypt existing DB: ")
+                self.set_passphrase(old_pass)
+            else:
+                raise RuntimeError("No key material available to decrypt DB. Set passphrase or use interactive=True.")
+
+        old_km = self._key_material
+        if old_km is None:
+            raise RuntimeError("failed to derive current key material")
+
+        # get new key material
+        if interactive and new_passphrase is None:
+            new_passphrase = getpass.getpass("Enter NEW passphrase (leave empty to use random keyfile): ")
+            confirm = getpass.getpass("Confirm NEW passphrase: ")
+            if new_passphrase != confirm:
+                raise RuntimeError("new passphrase mismatch")
+        # prepare new key material
+        if new_passphrase is None:
+            # create new random keyfile for new backend
+            new_km = secrets.token_bytes(32)
+            # write to default keyfile for this DB (overwrite)
+            tmp = self._keyfile + ".tmp.new"
+            with builtins.open(tmp, "wb") as f:
+                f.write(new_km)
+            os.replace(tmp, self._keyfile)
+            try:
+                os.chmod(self._keyfile, 0o600)
+            except Exception:
+                pass
+        elif new_passphrase == "":
+            # empty string indicates create a random keyfile instead of a passphrase-derived key
+            new_km = secrets.token_bytes(32)
+            tmp = self._keyfile + ".tmp.new"
+            with builtins.open(tmp, "wb") as f:
+                f.write(new_km)
+            os.replace(tmp, self._keyfile)
+            try:
+                os.chmod(self._keyfile, 0o600)
+            except Exception:
+                pass
+        else:
+            # derive new_km from new_passphrase and new salt
+            new_salt = secrets.token_bytes(16)
+            tmp_salt = self._saltfile + ".tmp.new"
+            with builtins.open(tmp_salt, "wb") as f:
+                f.write(new_salt)
+            os.replace(tmp_salt, self._saltfile)
+            try:
+                os.chmod(self._saltfile, 0o600)
+            except Exception:
+                pass
+            if _HAS_CRYPTO:
+                new_km = _derive_key_from_passphrase(new_passphrase, new_salt)
+            else:
+                new_km = hashlib.pbkdf2_hmac("sha256", new_passphrase.encode("utf-8"), new_salt, 200_000, dklen=32)
+
+        # Now we must read all live entries (decrypt with old_km) and write them re-encrypted with new_km.
+        # Acquire file lock to avoid concurrent writers.
+        path = self._backend.path
+        with FileLock(path, timeout=30.0):
+            # build list of (key, value) by scanning file and decrypting each encrypted record
+            entries: Dict[str, Any] = {}
+            # Use backend._index as best-effort source; if some encrypted records were skipped earlier,
+            # we attempt to scan file and decrypt with old_km
+            # First, copy existing in-memory index for plaintext/decrypted entries:
+            entries.update({k: v for k, v in self._backend._index.items() if v is not None})
+
+            # Now scan file to find any encrypted records we may have missed and decrypt with old_km
+            with builtins.open(path, "rb") as f:
+                start = 0
+                hdr = f.read(len(_DB_HEADER))
+                if hdr == _DB_HEADER:
+                    start = len(_DB_HEADER)
+                f.seek(start, os.SEEK_SET)
+                while True:
+                    lenb = f.read(_LEN_STRUCT.size)
+                    if not lenb or len(lenb) < _LEN_STRUCT.size:
+                        break
+                    (ln,) = _LEN_STRUCT.unpack(lenb)
+                    payload_raw = f.read(ln)
+                    if len(payload_raw) < ln:
+                        break
+                    try:
+                        # decode disk format to raw bytes (if format uses ascii encodings)
+                        payload = self._backend._maybe_decode_format(payload_raw) if hasattr(self._backend, "_maybe_decode_format") else payload_raw
+                        if payload[:1] == b"E":
+                            # try decrypt via cryptography or stdlib fallback
+                            try:
+                                if _HAS_CRYPTO:
+                                    plain = _decrypt_record_bytes(payload, old_km)
+                                else:
+                                    plain = _stdlib_decrypt(old_km, payload)
+                                obj = _parse_plaintext_record(plain)
+                                if obj["key"] is not None:
+                                    if obj["deleted"]:
+                                        if obj["key"] in entries:
+                                            del entries[obj["key"]]
+                                    else:
+                                        entries[obj["key"]] = obj["value"]
+                            except Exception:
+                                # can't decrypt (bad key) -> raise; rotation cannot proceed
+                                raise RuntimeError("Failed to decrypt existing record during rotation. Wrong passphrase/key?")
+                        else:
+                            obj = json.loads(payload.decode("utf-8"))
+                            if obj.get("deleted", False):
+                                if obj["key"] in entries:
+                                    del entries[obj["key"]]
+                            else:
+                                entries[obj["key"]] = _json_restore(obj.get("value"))
+                    except Exception:
+                        continue
+
+            # Now write a new compacted file encrypted with new_km
+            tmp = path + ".rotate.tmp"
+            with builtins.open(tmp, "wb") as tf:
+                tf.write(_DB_HEADER)
+                for k, v in entries.items():
+                    wrapped = _json_safe(v)
+                    plain_payload = json.dumps({"key": k, "deleted": False, "value": wrapped}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    # encrypt with new_km using AES-GCM if available, else stdlib
+                    if _HAS_CRYPTO:
+                        enc_payload = _encrypt_record_bytes(plain_payload, new_km)
+                    else:
+                        enc_payload = _stdlib_encrypt(new_km, plain_payload)
+                    # encode for disk format
+                    disk_payload = self._backend._encode_for_disk(enc_payload)
+                    tf.write(_LEN_STRUCT.pack(len(disk_payload)))
+                    tf.write(disk_payload)
+                tf.flush()
+                try:
+                    os.fsync(tf.fileno())
+                except Exception:
+                    pass
+            # rotate files
+            backup = path + ".bak.rotate"
+            try:
+                os.replace(path, backup)
+            except Exception:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+            os.replace(tmp, path)
+            # replace keyfile/saltfile already saved earlier
+            # reload backend file handles and index using new_km
+            try:
+                self._backend._open_file.close()
+            except Exception:
+                pass
+            self._backend._open_file = builtins.open(self._backend.path, "r+b")
+            self._backend._open_file.seek(0, os.SEEK_END)
+            # set self._key_material to new_km
+            self._key_material = new_km
+            # reload index using new_km
+            if _HAS_CRYPTO:
+                self._backend._load_index(key_material=new_km)
+            else:
+                # stdlib fallback: cannot call AESGCM decrypt but our decrypt implementation is available
+                self._backend._load_index(key_material=new_km)
+            try:
+                os.remove(backup)
+            except Exception:
+                pass
+
+    # attribute-style sugar & rest of API
+    def __setattr__(self, name, value):
+        if name.startswith("_"):
+            return object.__setattr__(self, name, value)
+        self.set(name, value)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        val = self.get(name, default=None)
+        if val is None:
+            raise AttributeError(name)
+        return val
+
+# ---------------------------
+# factory & module-level instance
+# ---------------------------
+def open_db(path: str = _DEFAULT_DATA_PATH, store_format: StoreFormat = "binary") -> DB:
+    b = BinaryKV(path, store_format=store_format)
+    return DB(b)
+
+_binary = BinaryKV(_DEFAULT_DATA_PATH, store_format="binary")
+db = DB(_binary)
+
+# ---------------------------
+# CLI helpers
+# ---------------------------
+def _get_db_for_cli(path: Optional[str], format_hint: Optional[str]) -> DB:
+    if not path:
+        return db
+    path = path if path.endswith(".dbce") else path + ".dbce"
+    backend = BinaryKV(path, store_format=format_hint or "binary")
+    return DB(backend)
+
+def cli_main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(prog="dbcake", description="dbcake CLI")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    def add_path_arg(p):
+        p.add_argument("dbpath", nargs="?", help="path to .dbce file (optional)")
+
+    p = sub.add_parser("create", help="create .dbce file")
+    add_path_arg(p)
+    p.add_argument("--format", choices=["binary", "bits01", "dec", "hex"], default="binary")
+
+    p = sub.add_parser("set", help="set key")
+    add_path_arg(p)
+    p.add_argument("key")
+    p.add_argument("value")
+
+    p = sub.add_parser("get", help="get key")
+    add_path_arg(p)
+    p.add_argument("key")
+
+    p = sub.add_parser("delete", help="delete key")
+    add_path_arg(p)
+    p.add_argument("key")
+
+    p = sub.add_parser("preview", help="preview keys")
+    add_path_arg(p)
+    p.add_argument("--limit", type=int, default=10)
+
+    p = sub.add_parser("compact", help="compact DB")
+    add_path_arg(p)
+
+    p = sub.add_parser("export", help="export db file to path")
+    add_path_arg(p)
+    p.add_argument("dest")
+
+    p = sub.add_parser("set-passphrase", help="set passphrase for DB (in memory)")
+    add_path_arg(p)
+    p.add_argument("--passphrase", nargs="?", default=None)
+    p.add_argument("--interactive", action="store_true", help="prompt for passphrase without echo")
+
+    p = sub.add_parser("set-format", help="set storage format for DB (reopens file)")
+    add_path_arg(p)
+    p.add_argument("format", choices=["binary", "bits01", "dec", "hex"])
+
+    p = sub.add_parser("title", help="switch to DB file (create if missing)")
+    add_path_arg(p)
+    p.add_argument("--format", choices=["binary", "bits01", "dec", "hex"], default=None)
+
+    p = sub.add_parser("keys", help="list keys")
+    add_path_arg(p)
+
+    p = sub.add_parser("reveal", help="reveal DB file in OS file manager")
+    add_path_arg(p)
+
+    # rotate-key CLI
+    p = sub.add_parser("rotate-key", help="rotate encryption key for DB (re-encrypt all data)")
+    add_path_arg(p)
+    p.add_argument("--old-passphrase", nargs="?", default=None)
+    p.add_argument("--new-passphrase", nargs="?", default=None)
+    p.add_argument("--interactive", action="store_true", help="prompt for old and new passphrases (no echo)")
+
+    args = parser.parse_args(argv)
+    path = args.dbpath if hasattr(args, "dbpath") and args.dbpath else None
+
+    try:
+        if args.cmd == "create":
+            fmt = args.format
+            target = path or _DEFAULT_DATA_PATH
+            target = target if target.endswith(".dbce") else target + ".dbce"
+            open_db(target, store_format=fmt).compact()
+            print("created", target)
+            return 0
+
+        if args.cmd == "set":
+            dbobj = _get_db_for_cli(path, None)
+            try:
+                val = json.loads(args.value)
+            except Exception:
+                val = args.value
+            dbobj.set(args.key, val)
+            print("ok")
+            return 0
+
+        if args.cmd == "get":
+            dbobj = _get_db_for_cli(path, None)
+            v = dbobj.get(args.key, None)
+            print(repr(v))
+            return 0
+
+        if args.cmd == "delete":
+            dbobj = _get_db_for_cli(path, None)
+            ok = dbobj.delete(args.key)
+            print("deleted" if ok else "not found")
+            return 0
+
+        if args.cmd == "preview":
+            dbobj = _get_db_for_cli(path, None)
+            rows = dbobj.preview(limit=args.limit)
+            if not rows:
+                print("<empty>")
+            else:
+                for k, v in rows:
+                    print(f"{k} : {v!r}")
+            return 0
+
+        if args.cmd == "compact":
+            dbobj = _get_db_for_cli(path, None)
+            dbobj.compact()
+            print("compacted")
+            return 0
+
+        if args.cmd == "export":
+            dbobj = _get_db_for_cli(path, None)
+            dbobj.export(args.dest)
+            print("exported to", args.dest)
+            return 0
+
+        if args.cmd == "set-passphrase":
+            dbobj = _get_db_for_cli(path, None)
+            if args.interactive or args.passphrase is None:
+                pp = getpass.getpass("Passphrase (not stored): ")
+            else:
+                pp = args.passphrase
+            dbobj.set_passphrase(pp)
+            print("passphrase set in memory. To persist effect, run: set pw=high")
+            return 0
+
+        if args.cmd == "set-format":
+            dbobj = _get_db_for_cli(path, args.format)
+            dbobj.set_format(args.format)
+            print("format set to", args.format)
+            return 0
+
+        if args.cmd == "title":
+            dbobj = _get_db_for_cli(path, args.format)
+            if path:
+                dbobj.title(path, store_format=args.format)
+                print("switched to", path)
+            else:
+                print("no path supplied")
+            return 0
+
+        if args.cmd == "keys":
+            dbobj = _get_db_for_cli(path, None)
+            for k in dbobj.keys():
+                print(k)
+            return 0
+
+        if args.cmd == "reveal":
+            target = path if path else _DEFAULT_DATA_PATH
+            if not target.endswith(".dbce"):
+                target = target + ".dbce"
+            reveal_in_file_manager(target)
+            return 0
+
+        if args.cmd == "rotate-key":
+            dbobj = _get_db_for_cli(path, None)
+            if args.interactive:
+                # prompt for old & new
+                oldp = getpass.getpass("Current passphrase (leave empty if using keyfile): ")
+                if oldp:
+                    dbobj.set_passphrase(oldp)
+                newp = getpass.getpass("NEW passphrase (leave empty to use random keyfile): ")
+                confirm = getpass.getpass("Confirm NEW passphrase: ")
+                if newp != confirm:
+                    print("New passphrase mismatch", file=sys.stderr)
+                    return 2
+                dbobj.rotate_key(new_passphrase=newp, interactive=False)
+                print("rotation complete")
+                return 0
+            else:
+                # non-interactive: use provided passphrases
+                if args.old_passphrase:
+                    dbobj.set_passphrase(args.old_passphrase)
+                dbobj.rotate_key(new_passphrase=args.new_passphrase, interactive=False)
+                print("rotation complete")
+                return 0
+
+    except Exception as e:
+        print("error:", e, file=sys.stderr)
+        return 2
+
+    return 0
+
+# ---------------------------
+# run CLI if module executed
+# ---------------------------
+if __name__ == "__main__":
+    raise SystemExit(cli_main())
