@@ -1,73 +1,134 @@
 # dbcake
-<img src="https://github.com/Cielecon/dbcake/blob/main/dbcake.png" width="300"/>
 
-a python database library that you can make your python projects easily with dbcake!
-**what does it do?** you can save your datas like *passwords* and *usernames* and lots of things... easily,
-with out any pain! and just in 3 lines!
-dbcake has high security and you can use it on **linux , windows , macos and ...**
-if you like this project , please star⭐ and send feedbacks :)
+`dbcake` — tiny single-file key/value database using `.dbce` files.
 
-# Learn how to use
+Features
+- Simple Python API: `dbcake.db.set("k", val)`, `dbcake.db.get("k")`
+- Choose storage format: `binary`, `bits01` (ASCII '0'/'1'), `dec` (3-digit per byte), `hex`
+- `.dbce` files include a small header to identify them
+- Three security levels via `db.pw`:
+  - `low` / `normal` — plain storage
+  - `high` — encrypted storage (AES-GCM via `cryptography` if installed; stdlib fallback if not)
+- Interactive CLI with `create`, `set`, `get`, `preview`, `compact`, `export`, `set-passphrase`, `set-format`, `rotate-key`, etc.
+- Interactive passphrase prompts (no echo) for CLI
+- Key rotation: re-encrypt the whole DB with a new passphrase/key
+- Cross-process file locking (POSIX `fcntl` and Windows `msvcrt`) for safety on Linux/macOS/Windows
+- Single-file module — drop `dbcake.py` into your project
 
-at first you need to import library
-```python
+> **Security note**: For production encryption, install `cryptography`:
+> ```bash
+> pip install cryptography
+> ```
+> The stdlib fallback provides an authenticated XOR-like stream cipher which is educational but not a substitute for vetted crypto libraries.
+
+---
+
+## Quick install
+
+Place `dbcake.py` next to your Python script, or `git clone` the repo and `import dbcake`.
+
+Install `cryptography` (recommended):
+
+```bash
+pip install cryptography
+```
+
+---
+
+## Basic usage (Python)
+
+```py
 import dbcake
-```
-now you used library! so lets set a table!
 
-```python 
+# set default DB file and storage format:
+dbcake.db.title("mydata.dbce", store_format="binary")  # formats: binary, bits01, dec, hex
+
+# set/get plain values:
 dbcake.db.set("username", "armin")
-```
-now you saved a username that it name is armin so lets get username
+print(dbcake.db.get("username"))
 
+# change storage format:
+dbcake.db.set_format("bits01")  # stores record payloads as ASCII '0'/'1' strings like '101000010...'
 
-```python 
-dbcake.db.get("username")
-```
-Output:
+# enable secure mode:
+dbcake.db.set_passphrase("my secret")  # in-memory only; or leave unset and db will use a keyfile
+dbcake.db.pw = "high"
+dbcake.db.set("secret", {"pin": 1234})
+print(dbcake.db.get("secret"))
 
-```python 
-armin
-```
-now you get output! so lets make password!
+# rotate key (programmatically)
+# rotate to a new passphrase (you must be in high mode and have the current passphrase set)
+dbcake.db.rotate_key(new_passphrase="my new passphrase")
 
-```python
-dbcake.db.pw= "high" # low | normal | high
-dbcake.db.secret = {pin: 1234} 
-print (dbcake.db.preview()) # preview table
-```
-# connection with SQL
-you can connect dbcake to **SQL** just with easy steps!
-```python
-#use the default sql connection (points at database.db)
-dbcake.sql.create_table("notes", {"id":"INTEGER PRIMARY KEY","title":"TEXT","body":"TEXT"})
-notes = dbcake.sql.table("notes")
-notes.insert({"title":"Hello","body":"First note"})
-print(notes.select(["id","title"]).all())
-#raw SQL
-rows = dbcake.sql.query("SELECT COUNT(*) AS cnt FROM notes")
+# compact to rewrite file and reduce size
+dbcake.db.compact()
 
-print(rows)
+# close when done
+dbcake.db.close()
 ```
-# Using an independent SQL file
-```python
-from dbcake import open_sql
-db = open_sql("myapp.db")
-db.create_table("users", {"id":"INTEGER PRIMARY KEY","name":"TEXT","age":"INTEGER"})
-tbl = db.table("users")
-tbl.insert({"name":"Armin","age":33})
-print(tbl.select(["id","name"]).where("age > ?", (20,)).all())
-db.close()
+
+---
+
+## CLI usage
+
+Run `python dbcake.py <command> [args]`:
+
+Examples:
+
+Create file:
+```bash
+python dbcake.py create mydata.dbce --format dec
 ```
-# Joins (basic usage)
-```python
-#create tables and use join clause
-dbcake.sql.create_table("authors", {"id":"INTEGER PRIMARY KEY","name":"TEXT"})
-dbcake.sql.create_table("posts", {"id":"INTEGER PRIMARY KEY","author_id":"INTEGER","title":"TEXT"})
-dbcake.sql.table("authors").insert({"name":"A"})
-dbcake.sql.table("posts").insert({"author_id":1,"title":"Hi"})
-rows = dbcake.sql.table("posts").select(["posts.id","posts.title","authors.name"]).join("INNER JOIN authors ON authors.id = posts.author_id").all()
-print(rows)
+
+Set key:
+```bash
+python dbcake.py set mydata.dbce username armin
 ```
+
+Get key:
+```bash
+python dbcake.py get mydata.dbce username
+```
+
+Preview:
+```bash
+python dbcake.py preview mydata.dbce --limit 20
+```
+
+Compact:
+```bash
+python dbcake.py compact mydata.dbce
+```
+
+Set passphrase (interactive, no echo):
+```bash
+python dbcake.py set-passphrase mydata.dbce --interactive
+```
+
+Rotate key (interactive):
+```bash
+python dbcake.py rotate-key mydata.dbce --interactive
+```
+
+Switch storage format:
+```bash
+python dbcake.py set-format mydata.dbce hex
+```
+
+Reveal DB in file manager:
+```bash
+python dbcake.py reveal mydata.dbce
+```
+
+---
+
+## Notes & tips
+
+- Use `db.pw = "high"` and `db.set_passphrase(...)` to enable encryption. `set_passphrase` stores the passphrase only in memory — the CLI offers an interactive prompt so you don't have to put passphrases in shell history.
+- The `rotate-key` operation requires the ability to decrypt the current data (i.e., you must provide the current passphrase if the in-memory key isn't present). Rotation writes a new file and replaces the old file atomically (best-effort).
+- The module uses a coarse-grained file lock for multi-process safety. This works well for small-to-medium apps and scripts; for heavy concurrent workloads use a real DB server.
+- For portability and maximum security, install `cryptography` — AES-GCM is used for encryption when available.
+- If you choose `bits01` or `dec` formats, the on-disk bytes become ASCII strings (e.g. `10100010...` or `065003...`), which you requested; the API still operates with Python objects.
+
 >[!CAUTION]
 >please read LICENSE and ©️ copyright by Cielecon all rights reversed.
