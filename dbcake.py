@@ -23,6 +23,7 @@ from tkinter import messagebox
 import asyncio
 import functools
 import datetime
+import types
 
 # Optional cryptography imports
 try:
@@ -43,7 +44,7 @@ except Exception:
     _HAS_FERNET = False
 
 # ---------------------------
-# Constants & types
+# Defaults & constants
 # ---------------------------
 _MODULE_DIR = os.path.dirname(__file__) or "."
 _DEFAULT_DATA_PATH = os.path.join(_MODULE_DIR, "data.dbce")
@@ -111,7 +112,7 @@ class FileLock:
             pass
 
 # ---------------------------
-# Serialization wrappers
+# JSON/pickle wrappers
 # ---------------------------
 def _json_safe(value: Any) -> Dict[str, Any]:
     try:
@@ -134,7 +135,7 @@ def _json_restore(obj: Any) -> Any:
     return obj
 
 # ---------------------------
-# Disk format conversions
+# Format conversions
 # ---------------------------
 def _bytes_to_bits01(b: bytes) -> bytes:
     return "".join(f"{byte:08b}" for byte in b).encode("ascii")
@@ -198,7 +199,7 @@ def reveal_in_file_manager(path: str) -> None:
         print("Open folder:", target)
 
 # ---------------------------
-# Centralized append-only store
+# BinaryKV (centralized)
 # ---------------------------
 class BinaryKV:
     def __init__(self, path: str = _DEFAULT_DATA_PATH, store_format: StoreFormat = "binary") -> None:
@@ -216,9 +217,7 @@ class BinaryKV:
                     f.flush(); os.fsync(f.fileno())
                 except Exception:
                     pass
-        # open for reading & writing
         self._open_file = builtins.open(self.path, "r+b")
-        # load index (no key material by default)
         self._load_index(key_material=None)
         self._open_file.seek(0, os.SEEK_END)
 
@@ -272,7 +271,6 @@ class BinaryKV:
                                     except Exception:
                                         pass
                                 else:
-                                    # encrypted but no key — skip
                                     pass
                             else:
                                 obj = json.loads(payload.decode("utf-8"))
@@ -368,9 +366,6 @@ class BinaryKV:
         return dest_path
 
     def compact(self, key_material: Optional[bytes] = None) -> None:
-        """
-        Rewrite file containing only current keys. If key_material provided, write encrypted records.
-        """
         with FileLock(self.path):
             with self._lock:
                 tmp = self.path + ".compact.tmp"
@@ -393,7 +388,6 @@ class BinaryKV:
                         os.fsync(tf.fileno())
                     except Exception:
                         pass
-                # swap files atomically
                 self._open_file.close()
                 backup = self.path + ".bak"
                 try:
@@ -443,7 +437,7 @@ class BinaryKV:
         print("-" * (maxk + 2 + 40))
 
 # ---------------------------
-# Decentralized per-key store
+# DecentralizedKV
 # ---------------------------
 class DecentralizedKV:
     def __init__(self, path: str, store_format: StoreFormat = "binary") -> None:
@@ -503,7 +497,6 @@ class DecentralizedKV:
                     payload = self._maybe_decode_format(raw)
                     try:
                         if payload[:1] == b"E":
-                            # encrypted per-key file (skip until decrypted)
                             continue
                         else:
                             obj = json.loads(payload.decode("utf-8"))
@@ -614,16 +607,11 @@ class DecentralizedKV:
         return target
 
     def compact(self, key_material: Optional[bytes] = None) -> None:
-        """
-        For decentralized store, compact simply reloads index (rewriting per-key encrypted files when key_material given).
-        """
         with FileLock(self.base_path):
             with self._lock:
+                self._load_index()
                 if key_material is None:
-                    # nothing to rewrite
-                    self._load_index()
                     return
-                # rewrite each key file: read current value from index and write encrypted payload
                 for k, v in list(self._index.items()):
                     if v is None:
                         continue
@@ -633,7 +621,6 @@ class DecentralizedKV:
                     fname = self._keyfile_name(k)
                     disk = self._encode_for_disk(enc_payload)
                     self._write_file_atomic(fname, disk)
-                # reload
                 self._load_index()
 
     def close(self) -> None:
@@ -701,7 +688,7 @@ def _parse_plaintext_record(plain_bytes: bytes) -> Dict[str, Any]:
         return {"key": None, "value": None, "deleted": False}
 
 # ---------------------------
-# Stdlib fallback cipher (secure HMAC-XOR streaming)
+# stdlib fallback cipher
 # ---------------------------
 def _hmac_sha256(key: bytes, data: bytes) -> bytes:
     return hmac.new(key, data, hashlib.sha256).digest()
@@ -764,7 +751,7 @@ class DB:
         self._server_url: Optional[str] = None
         self._server_headers: Dict[str, str] = {}
 
-    # ---------- storage helpers ----------
+    # ----- storage switching helpers -----
     def title(self, filename: str, store_format: Optional[StoreFormat] = None) -> None:
         if not filename.endswith(".dbce"):
             filename = filename + ".dbce"
@@ -817,6 +804,7 @@ class DB:
                 pass
 
     def centerilized(self) -> None:
+        """Switch to centralized .dbce append-only store (explicit method)."""
         current_path = self._backend.path
         fmt = getattr(self._backend, "store_format", "binary")
         try:
@@ -839,6 +827,7 @@ class DB:
                 pass
 
     def decentralized(self) -> None:
+        """Switch to decentralized per-key directory store (explicit method)."""
         current_path = self._backend.path
         fmt = getattr(self._backend, "store_format", "binary")
         try:
@@ -860,7 +849,7 @@ class DB:
             except Exception:
                 pass
 
-    # ---------- passphrase & keys ----------
+    # ----- passphrase / key helpers -----
     def set_passphrase(self, passphrase: str) -> None:
         self._passphrase = passphrase
         if self._level == "high":
@@ -931,7 +920,7 @@ class DB:
             except Exception:
                 pass
 
-    # ---------- basic DB API ----------
+    # ----- basic API: set/get/delete/keys/preview/export/compact/close -----
     def set(self, key: str, value: Any) -> None:
         if not isinstance(key, str):
             raise TypeError("key must be a string")
@@ -988,16 +977,8 @@ class DB:
     def close(self) -> None:
         self._backend.close()
 
-    # ---------- rotate key implementation ----------
+    # ----- key rotation (kept) -----
     def rotate_key(self, new_passphrase: Optional[str] = None, interactive: bool = False) -> None:
-        """
-        Re-encrypt entire DB with a new passphrase (or new keyfile). If interactive, prompts.
-        Steps:
-          1. Derive current key_material (if needed).
-          2. Derive new key_material (from new_passphrase or generate new keyfile).
-          3. Rewrite backend (compact) with new key_material.
-        """
-        # Get current key material (may be None if not high)
         current_km: Optional[bytes] = None
         if self._level == "high":
             if self._passphrase:
@@ -1005,21 +986,14 @@ class DB:
             elif os.path.exists(self._keyfile):
                 current_km = builtins.open(self._keyfile, "rb").read()
             else:
-                # nothing encrypted currently
                 current_km = None
 
-        # Determine new key material
         if interactive:
             newp = getpass.getpass("New passphrase (leave empty to use random keyfile): ")
             if newp:
-                new_km = _derive_key_from_passphrase(newp, secrets.token_bytes(16))
-                # Instead of storing salt inside rotate, we'll set passphrase and call set_passphrase
-                # Store new passphrase into memory and persist salt properly using set_passphrase flow
-                # To keep logic simple: set passphrase on DB object (this will create salt file)
                 self.set_passphrase(newp)
                 new_km = self._key_material
             else:
-                # generate new random keyfile
                 nm = secrets.token_bytes(32)
                 tmp = self._keyfile + ".newtmp"
                 with builtins.open(tmp, "wb") as f:
@@ -1036,7 +1010,6 @@ class DB:
                 self.set_passphrase(new_passphrase)
                 new_km = self._key_material
             else:
-                # create new random keyfile
                 nm = secrets.token_bytes(32)
                 tmp = self._keyfile + ".newtmp"
                 with builtins.open(tmp, "wb") as f:
@@ -1049,15 +1022,11 @@ class DB:
                 new_km = nm
                 self._key_material = new_km
 
-        # Now rewrite backend data with new encryption
-        # Strategy: read full index (if current_km available for decrypting encrypted records).
         try:
-            # Force reload index with current material
             if current_km is not None:
                 try:
                     self._backend._load_index(key_material=current_km)
                 except Exception:
-                    # If fails, try with self._key_material (maybe set_passphrase earlier)
                     pass
             else:
                 try:
@@ -1065,16 +1034,14 @@ class DB:
                 except Exception:
                     pass
 
-            # Now compact (backend knows how to write encrypted if key_material provided)
             if isinstance(self._backend, BinaryKV):
                 self._backend.compact(key_material=new_km)
             else:
-                # For decentralized: compact will rewrite per-key files if key_material provided
                 self._backend.compact(key_material=new_km)
         except Exception as e:
             raise RuntimeError(f"rotate_key failed: {e}") from e
 
-    # ---------- server sync (simple REST calling) ----------
+    # ----- server sync methods (simple HTTP JSON REST client using stdlib) -----
     def connect_server(self, base_url: str, headers: Optional[Dict[str, str]] = None) -> None:
         self._server_url = base_url.rstrip("/")
         self._server_headers = headers.copy() if headers else {}
@@ -1154,7 +1121,7 @@ class DB:
                 out.append((k, v))
         return out
 
-    # ---------- installer GUI ----------
+    # ----- graphical package installer -----
     def launch_installer(self) -> None:
         def _install_package(pkg: str, button, status_label):
             button.config(state="disabled")
@@ -1203,7 +1170,6 @@ db = DB(_binary)
 # ---------------------------
 # Secrets Client (HTTP) — sync + async
 # ---------------------------
-# Exceptions for client
 class DBcakeError(Exception):
     pass
 
@@ -1213,7 +1179,6 @@ class NotFoundError(DBcakeError):
 class AuthError(DBcakeError):
     pass
 
-# Data classes
 class SecretMeta:
     def __init__(self, name: str, created_at: str, updated_at: str, tags: Optional[List[str]] = None) -> None:
         self.name = name
@@ -1243,7 +1208,6 @@ class Secret:
     def __repr__(self) -> str:
         return f"<Secret name={self.name!r} value={'***' if self.value is not None else None} created_at={self.created_at}>"
 
-# HTTP helper
 def _http_request(method: str, url: str, api_key: Optional[str] = None, data: Optional[bytes] = None, headers: Optional[dict] = None, timeout: float = 10.0) -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=data, method=method)
     hdrs = (headers or {}).copy()
@@ -1723,12 +1687,428 @@ def cli_main(argv: Optional[List[str]] = None) -> int:
     return 0
 
 # ---------------------------
-# Module-level exports
+# Extension: transactions, indexes, schema, query engine, migrator, backup
+# (merged into same file to avoid circular import)
 # ---------------------------
-__all__ = ["db", "open_db", "DB", "BinaryKV", "DecentralizedKV", "Client", "AsyncClient", "DBcakeError", "NotFoundError", "AuthError"]
+
+# Utilities for extension
+def _atomic_copy(src: str, dst: str) -> None:
+    tmp = dst + ".tmp"
+    shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
+
+def _ensure_dir(path: str) -> None:
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+
+# Index Manager
+class IndexManager:
+    def __init__(self, db_obj: DB):
+        self.db = db_obj
+        self.backend = db_obj._backend
+        self.index_dir = getattr(self.backend, "path", _DEFAULT_DATA_PATH) + ".idx"
+        os.makedirs(self.index_dir, exist_ok=True)
+        self._locks: Dict[str, threading.RLock] = {}
+
+    def _index_path(self, field: str) -> str:
+        safe = field.replace("/", "_")
+        return os.path.join(self.index_dir, f"{safe}.idx")
+
+    def create_index(self, field: str, reindex: bool = True) -> None:
+        p = self._index_path(field)
+        lock = self._locks.setdefault(field, threading.RLock())
+        with lock:
+            index_map: Dict[str, List[str]] = {}
+            if not reindex and os.path.exists(p):
+                return
+            for k in self.db.keys():
+                v = self.db.get(k, None)
+                if v is None:
+                    continue
+                try:
+                    if isinstance(v, dict) and field in v:
+                        fv = v[field]
+                        key = json.dumps(fv, sort_keys=True, ensure_ascii=False)
+                        index_map.setdefault(key, []).append(k)
+                except Exception:
+                    continue
+            with open(p + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(index_map, f, ensure_ascii=False)
+            os.replace(p + ".tmp", p)
+
+    def drop_index(self, field: str) -> None:
+        p = self._index_path(field)
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+
+    def query_index(self, field: str, value: Any) -> List[str]:
+        p = self._index_path(field)
+        if not os.path.exists(p):
+            return []
+        key = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                idx = json.load(f)
+            return idx.get(key, [])
+        except Exception:
+            return []
+
+    def update_indexes_on_set(self, key: str, value: Any) -> None:
+        for fname in os.listdir(self.index_dir):
+            if not fname.endswith(".idx"):
+                continue
+            field = fname[:-4]
+            p = os.path.join(self.index_dir, fname)
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    idx = json.load(f)
+            except Exception:
+                idx = {}
+            for vlist in idx.values():
+                if key in vlist:
+                    vlist.remove(key)
+            try:
+                if isinstance(value, dict) and field in value:
+                    fv = value[field]
+                    kstr = json.dumps(fv, sort_keys=True, ensure_ascii=False)
+                    idx.setdefault(kstr, []).append(key)
+            except Exception:
+                pass
+            with open(p + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(idx, f, ensure_ascii=False)
+            os.replace(p + ".tmp", p)
+
+# Schema Manager
+class SchemaManager:
+    def __init__(self, db_obj: DB):
+        self.db = db_obj
+        self.backend = db_obj._backend
+        self.schema_path = getattr(self.backend, "path", _DEFAULT_DATA_PATH) + ".schema.json"
+        self._lock = threading.RLock()
+        self._load()
+
+    def _load(self):
+        try:
+            with open(self.schema_path, "r", encoding="utf-8") as f:
+                self._data = json.load(f)
+        except Exception:
+            self._data = {}
+
+    def _save(self):
+        with self._lock:
+            with open(self.schema_path + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(self._data, f, ensure_ascii=False, indent=2)
+            os.replace(self.schema_path + ".tmp", self.schema_path)
+
+    def create_table(self, table: str, schema: Dict[str, Dict[str, Any]]) -> None:
+        with self._lock:
+            if table in self._data:
+                raise ValueError("table already exists")
+            self._data[table] = schema
+            self._save()
+
+    def drop_table(self, table: str) -> None:
+        with self._lock:
+            if table in self._data:
+                del self._data[table]
+                self._save()
+
+    def validate(self, table: str, obj: Dict[str, Any], key: Optional[str] = None) -> None:
+        schema = self._data.get(table)
+        if not schema:
+            return
+        for fld, meta in schema.items():
+            if meta.get("required") and fld not in obj:
+                raise ValueError(f"Field {fld} is required for table {table}")
+            if fld in obj and meta.get("type") and meta.get("type") != "any":
+                tname = meta["type"]
+                val = obj[fld]
+                if tname == "int" and not isinstance(val, int):
+                    raise TypeError(f"{fld} must be int")
+                if tname == "str" and not isinstance(val, str):
+                    raise TypeError(f"{fld} must be str")
+        for fld, meta in schema.items():
+            if meta.get("unique"):
+                prefix = f"{table}:"
+                for existing in self.db.keys():
+                    if not existing.startswith(prefix):
+                        continue
+                    if key is not None and existing == key:
+                        continue
+                    val = self.db.get(existing, None)
+                    if isinstance(val, dict) and fld in val and fld in obj and val[fld] == obj[fld]:
+                        raise ValueError(f"Unique constraint failed on {fld}")
+        for fld, meta in schema.items():
+            fk = meta.get("fk")
+            if fk and fld in obj:
+                target_table, target_field = fk
+                pref = f"{target_table}:"
+                found = False
+                for existing in self.db.keys():
+                    if not existing.startswith(pref):
+                        continue
+                    val = self.db.get(existing, None)
+                    if isinstance(val, dict) and target_field in val and val[target_field] == obj[fld]:
+                        found = True
+                        break
+                if not found:
+                    raise ValueError(f"Foreign key constraint failed: {fld} -> {target_table}.{target_field}")
+
+# Transaction manager
+class TransactionError(Exception):
+    pass
+
+class Transaction:
+    def __init__(self, db_obj: DB, txname: Optional[str] = None):
+        self.db = db_obj
+        self.staged: List[Tuple[str, str, Any]] = []
+        self.active = False
+        self._lock = threading.RLock()
+        self.txname = txname or f"tx-{int(time.time()*1000)}"
+        self._index_manager = IndexManager(db_obj)
+
+    def begin(self):
+        with self._lock:
+            if self.active:
+                raise TransactionError("already active")
+            self.active = True
+            return self
+
+    def set(self, key: str, value: Any):
+        if not self.active:
+            raise TransactionError("not active")
+        self.staged.append(("set", key, value))
+
+    def delete(self, key: str):
+        if not self.active:
+            raise TransactionError("not active")
+        self.staged.append(("del", key, None))
+
+    def commit(self):
+        if not self.active:
+            raise TransactionError("not active")
+        path = getattr(self.db._backend, "path", None)
+        if not path:
+            raise TransactionError("backend has no path to lock")
+        with FileLock(path):
+            try:
+                for op, key, val in self.staged:
+                    if op == "set":
+                        self.db.set(key, val)
+                        try:
+                            self._index_manager.update_indexes_on_set(key, val)
+                        except Exception:
+                            pass
+                    elif op == "del":
+                        self.db.delete(key)
+            except Exception as e:
+                raise TransactionError(f"commit failed: {e}") from e
+            finally:
+                self.active = False
+                self.staged.clear()
+
+    def abort(self):
+        if not self.active:
+            raise TransactionError("not active")
+        self.active = False
+        self.staged.clear()
+
+# Query engine
+class QueryEngine:
+    def __init__(self, db_obj: DB, index_manager: Optional[IndexManager] = None):
+        self.db = db_obj
+        self.index = index_manager or IndexManager(db_obj)
+
+    def _table_keys(self, table: str) -> List[str]:
+        prefix = f"{table}:"
+        return [k for k in self.db.keys() if k.startswith(prefix)]
+
+    def select(self, table: str, where: Optional[callable] = None, fields: Optional[List[str]] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for k in self._table_keys(table):
+            v = self.db.get(k, None)
+            if v is None:
+                continue
+            if where is None or where(v):
+                if fields:
+                    rec = {f: v.get(f) for f in fields}
+                else:
+                    rec = v
+                out.append(rec)
+                if limit and len(out) >= limit:
+                    break
+        return out
+
+    def join(self, left_table: str, right_table: str, left_on: str, right_on: str, where: Optional[callable] = None, limit: Optional[int] = None) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        out: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        right_index_exists = os.path.exists(self.index._index_path(right_on))
+        right_keys_map: Dict[str, List[str]] = {}
+        if right_index_exists:
+            idxpath = self.index._index_path(right_on)
+            try:
+                with open(idxpath, "r", encoding="utf-8") as f:
+                    idx = json.load(f)
+                right_keys_map = {k: v for k, v in idx.items()}
+            except Exception:
+                right_keys_map = {}
+        for lk in self._table_keys(left_table):
+            lv = self.db.get(lk)
+            if lv is None:
+                continue
+            lval = lv.get(left_on)
+            candidates = []
+            if right_index_exists and lval is not None:
+                keystr = json.dumps(lval, sort_keys=True, ensure_ascii=False)
+                candidates = right_keys_map.get(keystr, [])
+            else:
+                candidates = self._table_keys(right_table)
+            for rk in candidates:
+                rv = self.db.get(rk)
+                if rv is None:
+                    continue
+                rval = rv.get(right_on)
+                if lval == rval:
+                    if where is None or where({"left": lv, "right": rv}):
+                        out.append((lv, rv))
+                        if limit and len(out) >= limit:
+                            return out
+        return out
+
+# Backup & restore
+def backup_db(db_obj: DB, dest_dir: str) -> str:
+    backend = db_obj._backend
+    base = getattr(backend, "path", _DEFAULT_DATA_PATH)
+    os.makedirs(dest_dir, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d%H%M%S")
+    name = os.path.basename(base)
+    dest = os.path.join(dest_dir, f"{name}.backup.{timestamp}")
+    os.makedirs(dest, exist_ok=True)
+    try:
+        shutil.copy2(base, os.path.join(dest, os.path.basename(base)))
+    except Exception:
+        pass
+    for ext in (".key", ".salt", ".schema.json"):
+        p = base + ext
+        if os.path.exists(p):
+            shutil.copy2(p, os.path.join(dest, os.path.basename(p)))
+    idxdir = base + ".idx"
+    if os.path.isdir(idxdir):
+        shutil.copytree(idxdir, os.path.join(dest, os.path.basename(idxdir)), dirs_exist_ok=True)
+    ddir = base + ".d"
+    if os.path.isdir(ddir):
+        shutil.copytree(ddir, os.path.join(dest, os.path.basename(ddir)), dirs_exist_ok=True)
+    return dest
+
+def restore_from_backup(db_path: str, backup_dir: str) -> None:
+    for fname in os.listdir(backup_dir):
+        src = os.path.join(backup_dir, fname)
+        dst = os.path.join(os.path.dirname(db_path), fname)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                if os.path.isdir(dst):
+                    shutil.rmtree(dst)
+                else:
+                    os.remove(dst)
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+
+# Migrator
+class Migrator:
+    def __init__(self, db_obj: DB):
+        self.db = db_obj
+        self.backend = db_obj._backend
+        self.mig_dir = getattr(self.backend, "path", _DEFAULT_DATA_PATH) + ".migrations"
+        os.makedirs(self.mig_dir, exist_ok=True)
+        self.state_file = os.path.join(self.mig_dir, ".migrations_state.json")
+        self._load_state()
+
+    def _load_state(self):
+        try:
+            with open(self.state_file, "r", encoding="utf-8") as f:
+                self._state = json.load(f)
+        except Exception:
+            self._state = {"applied": []}
+
+    def _save_state(self):
+        with open(self.state_file + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(self._state, f, ensure_ascii=False, indent=2)
+        os.replace(self.state_file + ".tmp", self.state_file)
+
+    def available_migrations(self) -> List[str]:
+        files = [f for f in os.listdir(self.mig_dir) if f.endswith(".py") and not f.startswith(".")]
+        files.sort()
+        return files
+
+    def apply_all(self):
+        for fn in self.available_migrations():
+            if fn in self._state.get("applied", []):
+                continue
+            self.apply(fn)
+
+    def apply(self, filename: str):
+        path = os.path.join(self.mig_dir, filename)
+        modname = f"dbcake_mig_{int(time.time()*1000)}"
+        spec = types.ModuleType(modname)
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+        exec(code, spec.__dict__)
+        up = spec.__dict__.get("upgrade")
+        if callable(up):
+            up(self.db)
+            self._state.setdefault("applied", []).append(filename)
+            self._save_state()
+        else:
+            raise RuntimeError("migration has no upgrade(db) function")
+
+    def rollback(self, filename: str):
+        path = os.path.join(self.mig_dir, filename)
+        modname = f"dbcake_mig_{int(time.time()*1000)}"
+        spec = types.ModuleType(modname)
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+        exec(code, spec.__dict__)
+        down = spec.__dict__.get("downgrade")
+        if callable(down):
+            down(self.db)
+            if filename in self._state.get("applied", []):
+                self._state["applied"].remove(filename)
+            self._save_state()
+        else:
+            raise RuntimeError("migration has no downgrade(db) function")
+
+# Attach extension helpers to DB instances
+def extend_db(db_obj: DB) -> None:
+    if hasattr(db_obj, "_ext_attached") and db_obj._ext_attached:
+        return
+    db_obj._ext_attached = True
+    db_obj.index_mgr = IndexManager(db_obj)
+    db_obj.schema_mgr = SchemaManager(db_obj)
+    db_obj.query_engine = QueryEngine(db_obj, index_manager=db_obj.index_mgr)
+    db_obj.migrator = Migrator(db_obj)
+    def tx_begin():
+        return Transaction(db_obj).begin()
+    db_obj.tx_begin = tx_begin
+    def backup(dest_dir: str) -> str:
+        return backup_db(db_obj, dest_dir)
+    db_obj.backup = backup
+    def restore(backup_dir: str) -> None:
+        restore_from_backup(getattr(db_obj._backend, "path", _DEFAULT_DATA_PATH), backup_dir)
+    db_obj.restore = restore
+
+# Auto-extend module-level db
+extend_db(db)
 
 # ---------------------------
-# Entrypoint
+# Module exports
+# ---------------------------
+__all__ = ["db", "open_db", "DB", "BinaryKV", "DecentralizedKV", "Client", "AsyncClient", "DBcakeError", "NotFoundError", "AuthError", "extend_db"]
+
+# ---------------------------
+# CLI entrypoint
 # ---------------------------
 if __name__ == "__main__":
     raise SystemExit(cli_main())
