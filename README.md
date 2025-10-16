@@ -1,134 +1,305 @@
 # dbcake
 
-`dbcake` — tiny single-file key/value database using `.dbce` files.
+**dbcake** — single-file, easy-to-use key/value database + secrets client for learning, quick prototypes, and small projects.
 
-Features
-- Simple Python API: `dbcake.db.set("k", val)`, `dbcake.db.get("k")`
-- Choose storage format: `binary`, `bits01` (ASCII '0'/'1'), `dec` (3-digit per byte), `hex`
-- `.dbce` files include a small header to identify them
-- Three security levels via `db.pw`:
-  - `low` / `normal` — plain storage
-  - `high` — encrypted storage (AES-GCM via `cryptography` if installed; stdlib fallback if not)
-- Interactive CLI with `create`, `set`, `get`, `preview`, `compact`, `export`, `set-passphrase`, `set-format`, `rotate-key`, etc.
-- Interactive passphrase prompts (no echo) for CLI
-- Key rotation: re-encrypt the whole DB with a new passphrase/key
-- Cross-process file locking (POSIX `fcntl` and Windows `msvcrt`) for safety on Linux/macOS/Windows
-- Single-file module — drop `dbcake.py` into your project
+`dbcake.py` is a self-contained Python module that provides:
 
-> **Security note**: For production encryption, install `cryptography`:
-> ```bash
-> pip install cryptography
-> ```
-> The stdlib fallback provides an authenticated XOR-like stream cipher which is educational but not a substitute for vetted crypto libraries.
+- Local key/value store in a single append-only `.dbce` file (centralized) **or** per-key files (decentralized).
+- Multiple on-disk formats: `binary`, `bits01`, `dec`, `hex`.
+- Encryption modes: `low | normal | high`. Uses AES-GCM (via `cryptography`) when available; otherwise a secure stdlib fallback.
+- Key rotation, file-locking for multi-process safety, compaction, export, preview, and per-key operations.
+- A small HTTP secrets client (`Client` / `AsyncClient`) for talking to a remote secrets API (optional).
+- CLI for DB + secrets client and a tiny Tkinter GUI installer for optional packages.
+- Single-file distribution — `dbcake.py` — drop into a project and import or call from command line.
 
 ---
 
-## Quick install
+## Table of contents
 
-Place `dbcake.py` next to your Python script, or `git clone` the repo and `import dbcake`.
-
-Install `cryptography` (recommended):
-
-```bash
-pip install cryptography
-```
+- [Quick start](#quick-start)  
+- [Installation](#installation)  
+- [Basic usage (Python API)](#basic-usage-python-api)  
+- [Storage formats & modes](#storage-formats--modes)  
+- [Encryption, passphrases & key rotation](#encryption-passphrases--key-rotation)  
+- [CLI usage](#cli-usage)  
+- [Secrets HTTP client](#secrets-http-client)  
+- [Examples: local server (for testing client)](#examples-local-server-for-testing-client)  
+- [Security notes](#security-notes)  
+- [Troubleshooting](#troubleshooting)  
+- [Contributing](#contributing)  
+- [License](#license)
 
 ---
 
-## Basic usage (Python)
+## Quick start
 
-```py
+1. Save `dbcake.py` into your project folder.
+
+2. Use the module-level `db` object or create your own database instance:
+
+```python
 import dbcake
 
-# set default DB file and storage format:
-dbcake.db.title("mydata.dbce", store_format="binary")  # formats: binary, bits01, dec, hex
-
-# set/get plain values:
+# simple use (module-level default DB file: data.dbce)
 dbcake.db.set("username", "armin")
-print(dbcake.db.get("username"))
+print(dbcake.db.get("username"))   # -> "armin"
 
-# change storage format:
-dbcake.db.set_format("bits01")  # stores record payloads as ASCII '0'/'1' strings like '101000010...'
+# create/open a custom DB file
+mydb = dbcake.open_db("project.dbce", store_format="binary", dataset="centerilized")
+mydb.set("score", 100)
+print(mydb.get("score"))
+```
+# Installation
 
-# enable secure mode:
-dbcake.db.set_passphrase("my secret")  # in-memory only; or leave unset and db will use a keyfile
+dbcake.py is a single-file module — no installation required beyond having Python.
+
+Optional (recommended) packages:
+
+cryptography — provides AES-GCM & Fernet support (stronger, standard crypto).
+
+tkinter — required only if you want to run the graphical installer.
+
+# Install cryptography:
+```bash
+python -m pip install cryptography
+```
+Run the GUI installer (uses tkinter) to install optional packages:
+```bash
+python dbcake.py --installer
+```
+# Basic usage (Python API)
+
+Module-level convenience DB
+```python
+import dbcake
+
+# default DB (data.dbce)
+dbcake.db.set("a", 123)
+print(dbcake.db.get("a"))           # -> 123
+
+# change file & format
+dbcake.db.title("mydata.dbce", store_format="binary")
+dbcake.db.set("user", {"name": "alice"})
+print(dbcake.db.get("user"))
+
+# switch to decentralized per-key files
+dbcake.db.decentralized()
+dbcake.db.set("session", {"id": 1})
+
+# list keys
+print(dbcake.db.keys())
+
+# preview a few entries
+print(dbcake.db.preview(limit=5))
+dbcake.db._backend.pretty_print_preview(limit=5)  # helper that prints nice table
+```
+Factory style (explicit DB object)
+```python
+mydb = dbcake.open_db("project.dbce", store_format="hex", dataset="centerilized")
+mydb.set("k", "v")
+v = mydb.get("k")
+```
+# Storage formats & modes
+
+store_format options when creating or switching DB:
+
+binary — raw bytes (fast).
+
+bits01 — ASCII '0' / '1' bit string.
+
+dec — decimal digits grouped by 3 per byte.
+
+hex — hex representation.
+
+Switch format programmatically:
+```python
+dbcake.db.set_format("hex")
+```
+Switch dataset mode:
+```python
+dbcake.db.centerilized()   # centralized append-only .dbce
+dbcake.db.decentralized()  # per-key files in .d directory
+```
+# Encryption, passphrases & key rotation
+
+db.pw controls on-disk security:
+
+db.pw = "low" — minimal (fast).
+
+db.pw = "normal" — default (no re-encryption).
+
+db.pw = "high" — records encrypted before writing (AES-GCM if cryptography is installed; otherwise a fallback).
+
+Set passphrase (derive key from passphrase):
+```python
 dbcake.db.pw = "high"
-dbcake.db.set("secret", {"pin": 1234})
-print(dbcake.db.get("secret"))
-
-# rotate key (programmatically)
-# rotate to a new passphrase (you must be in high mode and have the current passphrase set)
-dbcake.db.rotate_key(new_passphrase="my new passphrase")
-
-# compact to rewrite file and reduce size
-dbcake.db.compact()
-
-# close when done
-dbcake.db.close()
+dbcake.db.set_passphrase("my secret passphrase")
+dbcake.db.set("secret", "value")
 ```
+Generate/store keyfile (if you do not use passphrase) — DB will generate .key next to the DB file.
 
----
+Rotate keys (re-encrypt everything):
 
-## CLI usage
-
-Run `python dbcake.py <command> [args]`:
-
-Examples:
-
-Create file:
+CLI (interactive):
 ```bash
-python dbcake.py create mydata.dbce --format dec
+python dbcake.py db rotate-key mydata.dbce --interactive
 ```
+**Programmatic:**
+```python
+dbcake.db.set_passphrase("old")
+dbcake.db.rotate_key(new_passphrase="new")
+```
+rotate_key rewrites the DB and re-encrypts records under the new key.
 
-Set key:
+# CLI usage
+
+The single file exposes a CLI for both local DB and the secrets client.
+
+# Local DB commands
 ```bash
-python dbcake.py set mydata.dbce username armin
-```
+# create file
+python dbcake.py db create mydata.dbce --format binary
 
-Get key:
+# set key
+python dbcake.py db set mydata.dbce username '"armin"'
+
+# get key
+python dbcake.py db get mydata.dbce username
+
+# list keys
+python dbcake.py db keys mydata.dbce
+
+# preview
+python dbcake.py db preview mydata.dbce --limit 5
+
+# compact (rewrite to keep only current items)
+python dbcake.py db compact mydata.dbce
+
+# set passphrase (interactive)
+python dbcake.py db set-passphrase mydata.dbce --interactive
+
+# rotate key (interactive)
+python dbcake.py db rotate-key mydata.dbce --interactive
+
+# reveal DB file in OS file manager
+python dbcake.py db reveal mydata.dbce
+```
+CLI values attempt JSON parsing; unparseable input will be stored as raw string.
+
+# Secrets HTTP client (CLI)
 ```bash
-python dbcake.py get mydata.dbce username
+# set secret
+python dbcake.py secret set myname "value" --url https://secrets.example.com --api-key S3CR
+
+# get secret (reveal)
+python dbcake.py secret get myname --reveal --url https://secrets.example.com --api-key S3CR
+
+# list
+python dbcake.py secret list --url https://secrets.example.com --api-key S3CR
+
+# delete
+python dbcake.py secret delete myname --url https://secrets.example.com --api-key S3CR
 ```
+# Secrets HTTP client (Python)
+```python
+from dbcake import Client
 
-Preview:
-```bash
-python dbcake.py preview mydata.dbce --limit 20
+client = Client("https://secrets.example.com", api_key="S3CR")
+meta = client.set("db_token", "S3cR3tV@lue", tags=["prod","db"])
+secret = client.get("db_token", reveal=True)
+print(secret.value)
+
+# With Fernet (encrypt locally before send)
+from cryptography.fernet import Fernet
+fkey = Fernet.generate_key().decode()
+client2 = Client("https://secrets.example.com", api_key="S3", fernet_key=fkey)
+client2.set("encrypted", "very-secret")
+s = client2.get("encrypted", reveal=True)
+print(s.value)
 ```
+AsyncClient is available for async code (AsyncClient.from_env() to read env vars).
 
-Compact:
-```bash
-python dbcake.py compact mydata.dbce
+Env vars for convenience: DBCAKE_URL, DBCAKE_API_KEY, DBCAKE_FERNET_KEY.
+
+Examples: local server (for testing client)
+
+Below is a tiny example (not included in dbcake.py) of a simple HTTP test server you can use to exercise the Client:
+```python
+# tiny_test_server.py (example only; not production-ready)
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json, urllib.parse
+
+STORE = {}
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, code, data):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def do_POST(self):
+        if self.path == "/secrets":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            doc = json.loads(body.decode("utf-8"))
+            name = doc["name"]
+            STORE[name] = doc
+            now = "2025-10-16T00:00:00Z"
+            self._send(201, {"name": name, "created_at": now, "updated_at": now, "tags": doc.get("tags", [])})
+            return
+        self.send_error(404)
+
+    def do_GET(self):
+        if self.path.startswith("/secrets"):
+            parsed = urllib.parse.urlparse(self.path)
+            parts = parsed.path.split("/")
+            if len(parts) == 3 and parts[2]:
+                name = parts[2]
+                item = STORE.get(name)
+                if not item:
+                    self.send_error(404)
+                    return
+                reveal = urllib.parse.parse_qs(parsed.query).get("reveal", [])
+                doc = item.copy()
+                self._send(200, doc)
+                return
+        self.send_error(404)
+
+    def do_DELETE(self):
+        parts = self.path.split("/")
+        if len(parts) == 3 and parts[2]:
+            name = parts[2]
+            if name in STORE:
+                del STORE[name]
+                self._send(204, {})
+                return
+        self.send_error(404)
+
+if __name__ == '__main__':
+    server = HTTPServer(("localhost", 8000), Handler)
+    print("Listening on http://localhost:8000")
+    server.serve_forever()
 ```
+# Security notes
 
-Set passphrase (interactive, no echo):
-```bash
-python dbcake.py set-passphrase mydata.dbce --interactive
-```
+If you use db.set_passphrase("..."), a salt file (.salt) is created and used to derive an encryption key. Keep passphrases secret.
 
-Rotate key (interactive):
-```bash
-python dbcake.py rotate-key mydata.dbce --interactive
-```
+If you don't set a passphrase, the DB generates a .key keyfile next to the DB. Keep that file safe.
 
-Switch storage format:
-```bash
-python dbcake.py set-format mydata.dbce hex
-```
+Use TLS for server communication (HTTPS) and protect API keys.
 
-Reveal DB in file manager:
-```bash
-python dbcake.py reveal mydata.dbce
-```
+rotate_key rewrites and re-encrypts stored data — use it regularly for long-lived data.
 
----
+This project is intended for learning and small projects. For production secrets management, consider hardened solutions (HashiCorp Vault, AWS KMS/Secrets Manager, etc.).
+# Troubleshooting
 
-## Notes & tips
+cryptography not installed — AES-GCM and Fernet features disabled; library will use a secure fallback. Install cryptography if you need standard AES-GCM/Fernet.
 
-- Use `db.pw = "high"` and `db.set_passphrase(...)` to enable encryption. `set_passphrase` stores the passphrase only in memory — the CLI offers an interactive prompt so you don't have to put passphrases in shell history.
-- The `rotate-key` operation requires the ability to decrypt the current data (i.e., you must provide the current passphrase if the in-memory key isn't present). Rotation writes a new file and replaces the old file atomically (best-effort).
-- The module uses a coarse-grained file lock for multi-process safety. This works well for small-to-medium apps and scripts; for heavy concurrent workloads use a real DB server.
-- For portability and maximum security, install `cryptography` — AES-GCM is used for encryption when available.
-- If you choose `bits01` or `dec` formats, the on-disk bytes become ASCII strings (e.g. `10100010...` or `065003...`), which you requested; the API still operates with Python objects.
+tkinter missing — GUI installer will not run. Install system package (e.g., python3-tk) or use pip-installed packages via CLI.
 
+Lock timeouts — another process may hold the DB. Wait or increase timeout; ensure only compatible writers access the DB.
+
+Permission errors — ensure the process can write to DB folder and key/salt files.
 >[!CAUTION]
 >please read LICENSE and ©️ copyright by Cielecon all rights reversed.
