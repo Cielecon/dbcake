@@ -26,8 +26,6 @@
 - [Examples: local server (for testing client)](#examples-local-server-for-testing-client)  
 - [Security notes](#security-notes)  
 - [Troubleshooting](#troubleshooting)  
-- [Contributing](#contributing)  
-- [License](#license)
 
 ---
 
