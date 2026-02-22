@@ -1,345 +1,607 @@
 ![alt text](dbcake.png)
-# dbcake
 
-**dbcake** is single-file, easy-to-use key/value database and secrets client with list/tuple and support for learning!!!, quick prototypes, and small projects and more!...
+# 🍰 dbcake v1.4.3
 
-`dbcake.py` is a self-contained Python module that provides:
+**Single-file, easy-to-use key/value database + secrets client with list/tuple/dictionary support for learning, quick prototypes, and small projects.**
 
-- Local key/value store in a single append-only `.dbce` file (centralized) **or** per-key files (decentralized)
-- Built-in **list and tuple management** with intuitive operations
-- Multiple on-disk formats: `binary`, `bits01`, `dec`, `hex`
-- Encryption modes: `low | normal | high`. Uses AES-GCM (via `cryptography`) when available; otherwise a secure stdlib fallback
-- Key rotation, file-locking for multi-process safety, compaction, export, preview, and per-key operations
-- A small HTTP secrets client (`Client` / `AsyncClient`) for talking to a remote secrets API (optional)
-- CLI for DB + secrets client and a tiny Tkinter GUI installer for optional packages
-- Single-file distribution — `dbcake.py` — drop into a project and import or call from command line
+[![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.4.3-orange.svg)]()
 
----
+`dbcake.py` is a self-contained Python module that requires **zero dependencies** (optional packages for advanced features). Just drop the single file into your project and start using it!
 
-## Table of Contents
+## 📚 Table of Contents
 
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Basic Usage (Python API)](#basic-usage-python-api)
-- [List & Tuple Operations](#list--tuple-operations)
-- [Storage Formats & Modes](#storage-formats--modes)
-- [Encryption, Passphrases & Key Rotation](#encryption-passphrases--key-rotation)
-- [CLI Usage](#cli-usage)
-- [Secrets HTTP Client](#secrets-http-client)
-- [Examples](#examples)
-- [Security Notes](#security-notes)
-- [Troubleshooting](#troubleshooting)
+- [Features](#-features)
+- [Quick Start](#-quick-start)
+- [Installation](#-installation)
+- [Basic Usage](#-basic-usage)
+- [Data Structures](#-data-structures)
+  - [Dictionary Manager](#dictionary-manager)
+  - [List Manager](#list-manager)
+  - [Tuple Manager](#tuple-manager)
+  - [Sum Manager](#sum-manager)
+- [Storage Options](#-storage-options)
+- [Security & Encryption](#-security--encryption)
+- [File Operations](#-file-operations)
+- [Database Connectors](#-database-connectors)
+- [Secrets HTTP Client](#-secrets-http-client)
+- [CLI Usage](#-cli-usage)
+- [Examples](#-examples)
+- [Troubleshooting](#-troubleshooting)
+- [License](#-license)
 
----
+## ✨ Features
 
-## Quick Start
+- **Single File** - Drop `dbcake.py` into any project, no installation needed
+- **Multiple Data Types** - Store strings, numbers, lists, tuples, dictionaries, and any Python object
+- **Dictionary Manager** - Native dictionary operations with nested access
+- **List/Tuple Support** - Append, remove, pop, extend like native Python lists
+- **Sum Manager** - Built-in arithmetic operations (add, subtract, multiply, divide)
+- **Multiple Storage Formats**: `binary | bits01 | dec | hex`
+- **Encryption Modes**: `low | normal | high` (AES-GCM when available)
+- **Two Storage Modes**: Centralized (single file) or Decentralized (per-key files)
+- **Key Rotation** - Re-encrypt all data with new keys
+- **File Locking** - Safe for multi-process access
+- **Database Connectors** - MySQL, SQLite, PostgreSQL, MongoDB, Redis, Prisma
+- **Secrets Client** - HTTP client for remote secrets API
+- **CLI Interface** - Full command-line control
+- **Data Persistence** - Your data survives library updates
 
-1. Save `dbcake.py` into your project folder.
+## 🚀 Quick Start
 
-2. Use the module-level `db` object or create your own database instance:
+1. **Save `dbcake.py`** into your project folder
+
+2. **Start using it:**
 
 ```python
 import dbcake
 
-# Simple use (module-level default DB file: data.dbce)
+# Simple key-value storage
 dbcake.db.set("username", "armin")
-print(dbcake.db.get("username"))   # -> "armin"
+print(dbcake.db.get("username"))  # -> "armin"
 
-# Create/open a custom DB file
-mydb = dbcake.open_db("project.dbce", store_format="binary", dataset="centerilized")
+# Create/open a custom database
+mydb = dbcake.open_db("project.dbce")
 mydb.set("score", 100)
-print(mydb.get("score"))
+print(mydb.get("score"))  # -> 100
+
+# List operations
+dbcake.db.list['fruits'] = ['apple', 'banana']
+dbcake.db.list.append('fruits', 'orange')
+print(dbcake.db.list['fruits'])  # -> ['apple', 'banana', 'orange']
+
+# Dictionary operations
+dbcake.db.dict['user'] = {'name': 'Armin', 'age': 25}
+print(dbcake.db.dict['user']['name'])  # -> 'Armin'
 ```
 
-## Installation
+## 📦 Installation
 
-dbcake.py is a single-file module — no installation required beyond having Python.
-
-**Optional (recommended) packages:**
-
-- `cryptography` — provides AES-GCM & Fernet support (stronger, standard crypto)
-- `tkinter` — required only if you want to run the graphical installer
-
-### Install cryptography:
+### Option 1: Direct Download (Recommended)
 ```bash
-python -m pip install cryptography
+# Download the single file in github
+
+# Or just create a new file and copy the code
 ```
 
-### Run the GUI installer (uses tkinter) to install optional packages:
+### Option 2: Install Optional Packages
 ```bash
-python dbcake.py --installer
+# For encryption support
+pip install cryptography
+
+# For HTTP client
+pip install requests
+
+# For async support
+pip install aiohttp
+
+# For database connectors
+pip install mysql-connector-python  # MySQL
+pip install psycopg2-binary         # PostgreSQL
+pip install pymongo                  # MongoDB
+pip install redis                    # Redis
+pip install prisma                   # Prisma
 ```
 
-## Basic Usage (Python API)
+## 🎯 Basic Usage
 
-### Module-level convenience DB
+### Module-level Convenience DB
 ```python
 import dbcake
 
-# Default DB (data.dbce)
-dbcake.db.set("a", 123)
-print(dbcake.db.get("a"))           # -> 123
+# Default database (data.dbce)
+dbcake.db.set("name", "Alice")
+dbcake.db.set("age", 30)
+dbcake.db.set("scores", [95, 88, 92])
 
-# Change file & format
-dbcake.db.reconfigure("mydata.dbce", store_format="binary")
-dbcake.db.set("user", {"name": "alice"})
-print(dbcake.db.get("user"))
+# Retrieve values
+print(dbcake.db.get("name"))    # -> "Alice"
+print(dbcake.db.get("age"))     # -> 30
+print(dbcake.db.get("scores"))  # -> [95, 88, 92]
 
-# Switch to decentralized per-key files
-dbcake.db.decentralized()
-dbcake.db.set("session", {"id": 1})
+# Check existence
+if dbcake.db.exists("name"):
+    print("Key exists!")
 
-# List keys
-print(dbcake.db.keys())
+# List all keys
+print(dbcake.db.keys())  # -> ['name', 'age', 'scores']
 
-# Preview a few entries
-print(dbcake.db.preview(limit=5))
-dbcake.db.pretty_print_preview(limit=5)  # Prints nice table
+# Delete a key
+dbcake.db.delete("age")
+
+# Preview database
+dbcake.db.pretty_print_preview(limit=5)
 ```
 
-### Factory style (explicit DB object)
+### Custom Database Instance
 ```python
-mydb = dbcake.open_db("project.dbce", store_format="hex", dataset="centerilized")
-mydb.set("k", "v")
-v = mydb.get("k")
+from dbcake import open_db
+
+# Create/open a custom database
+db = open_db("mydata.dbce", store_format="binary", dataset="centerilized")
+
+# Use it like the default db
+db.set("key", "value")
+value = db.get("key")
 ```
 
-## List & Tuple Operations
+## 📊 Data Structures
 
-### List Management
-dbcake provides special list operations that feel like native Python lists:
-
-```python
-import dbcake
-
-# Set a list with multiple values
-dbcake.db.list['users'] = ['armin', 'ali']
-# or: dbcake.db.set('users', ['armin', 'ali'])
-
-# Append to list
-dbcake.db.list.append('users', 'mahsa')  # Now: ['armin', 'ali', 'mahsa']
-
-# Remove from list
-dbcake.db.list.remove('users', 'armin')  # Now: ['ali', 'mahsa']
-
-# Get list
-users = dbcake.db.list['users']  # Returns: ['ali', 'mahsa']
-print(users)  # ['ali', 'mahsa']
-
-# Extend list with multiple items
-dbcake.db.list.extend('users', ['sara', 'reza'])  # Now: ['ali', 'mahsa', 'sara', 'reza']
-
-# Insert at specific position
-dbcake.db.list.insert('users', 0, 'first')  # Now: ['first', 'ali', 'mahsa', 'sara', 'reza']
-
-# Pop from list (removes and returns last item)
-last_user = dbcake.db.list.pop('users')  # Returns: 'reza'
-
-# Clear all items from list
-dbcake.db.list.clear('users')  # Now: []
-
-# Check if key exists and is a list/tuple
-if 'users' in dbcake.db.list:
-    print("Users is a list")
-
-# Get with default value
-users = dbcake.db.list.get('users', default=['default_user'])
-```
-
-### Tuple Management
-For immutable sequences, use tuple operations:
+### Dictionary Manager
+Work with dictionaries like native Python objects:
 
 ```python
 import dbcake
 
-# Set a tuple
+# Create a dictionary
+dbcake.db.dict['user'] = {
+    'name': 'Armin',
+    'age': 25,
+    'email': 'armin@example.com',
+    'address': {
+        'city': 'Tehran',
+        'country': 'Iran',
+        'zip': '12345'
+    }
+}
+
+# Access nested values
+print(dbcake.db.dict['user']['name'])           # -> 'Armin'
+print(dbcake.db.dict['user']['address']['city'])  # -> 'Tehran'
+
+# Update specific fields
+dbcake.db.dict['user']['age'] = 26
+
+# Add new fields
+dbcake.db.dict['user']['phone'] = '+98 123456789'
+
+# Update multiple fields
+dbcake.db.dict['user'].update({'city': 'New York', 'job': 'Developer'})
+
+# Get specific field
+email = dbcake.db.dict.get_field('user', 'email')
+
+# Remove a field
+removed = dbcake.db.dict.pop('user', 'email')
+
+# Dictionary operations
+user = dbcake.db.dict['user']
+print(user.keys())     # -> dict_keys(['name', 'age', 'address', 'phone', 'city', 'job'])
+print(user.values())   # -> dict_values(['Armin', 26, {...}, '+98 123456789', 'New York', 'Developer'])
+print(len(user))       # -> 6
+print('name' in user)  # -> True
+```
+
+### List Manager
+Work with lists intuitively:
+
+```python
+import dbcake
+
+# Create a list
+dbcake.db.list['fruits'] = ['apple', 'banana', 'orange']
+print(dbcake.db.list['fruits'])  # -> ['apple', 'banana', 'orange']
+
+# Append items
+dbcake.db.list.append('fruits', 'grape')
+dbcake.db.list.append('fruits', 'mango')
+print(dbcake.db.list['fruits'])  # -> ['apple', 'banana', 'orange', 'grape', 'mango']
+
+# Extend with multiple items
+dbcake.db.list.extend('fruits', ['pineapple', 'kiwi'])
+
+# Insert at specific index
+dbcake.db.list.insert('fruits', 2, 'strawberry')
+
+# Remove specific item
+dbcake.db.list.remove('fruits', 'banana')
+
+# Pop last item
+last = dbcake.db.list.pop('fruits')
+print(f"Popped: {last}")
+
+# Get with default (if key doesn't exist)
+colors = dbcake.db.list.get('colors', default=['red', 'green', 'blue'])
+
+# Check if key exists in list manager
+if 'fruits' in dbcake.db.list:
+    print("fruits is a list")
+
+# Clear list
+dbcake.db.list.clear('fruits')
+```
+
+### Tuple Manager
+For immutable sequences:
+
+```python
+import dbcake
+
+# Create a tuple
 dbcake.db.tuple['coordinates'] = (10, 20, 30)
-# or: dbcake.db.set('coordinates', (10, 20, 30))
+print(dbcake.db.tuple['coordinates'])  # -> (10, 20, 30)
 
-# Get tuple
-coords = dbcake.db.tuple['coordinates']  # Returns: (10, 20, 30)
+# Convert list to tuple automatically
+dbcake.db.tuple['point'] = [100, 200]  # Stored as (100, 200)
 
-# Count occurrences of a value
-count = dbcake.db.tuple.count('coordinates', 10)  # Returns: 1
+# Count occurrences
+count = dbcake.db.tuple.count('coordinates', 20)  # -> 1
 
-# Find index of a value
-index = dbcake.db.tuple.index('coordinates', 20)  # Returns: 1
+# Find index
+index = dbcake.db.tuple.index('coordinates', 30)  # -> 2
 
-# Check if key exists and is a tuple
-if 'coordinates' in dbcake.db.tuple:
-    print("Coordinates is a tuple")
-
-# Get with default value
-coords = dbcake.db.tuple.get('coordinates', default=(0, 0, 0))
+# Get with default
+coords = dbcake.db.tuple.get('missing', default=(0, 0, 0))
 ```
 
-### Mixed Usage Example
+### Sum Manager
+Built-in arithmetic operations:
+
 ```python
 import dbcake
 
-# Store different data types
-dbcake.db.set('name', 'Armin')                # String
-dbcake.db.set('age', 25)                      # Integer
-dbcake.db.set('scores', [95, 88, 92])         # List
-dbcake.db.set('location', (35.6895, 51.3890)) # Tuple
-dbcake.db.set('config', {'theme': 'dark', 'notifications': True})  # Dict
+# Add values
+dbcake.db.sum.add('counter', 10)
+dbcake.db.sum.add('counter', 5)
+dbcake.db.sum.add('counter', 3)
+print(dbcake.db.sum.get('counter'))  # -> 18
 
-# Access them appropriately
-name = dbcake.db.get('name')                  # String
-age = dbcake.db.get('age')                    # Integer
-scores = dbcake.db.list['scores']             # List
-location = dbcake.db.tuple['location']        # Tuple
-config = dbcake.db.get('config')              # Dict
+# Subtract
+dbcake.db.sum.subtract('counter', 4)  # -> 14
 
-# Modify lists
-dbcake.db.list.append('scores', 87)           # Add new score
-dbcake.db.list.remove('scores', 88)           # Remove score 88
+# Increment/Decrement
+dbcake.db.sum.increment('counter')     # -> 15
+dbcake.db.sum.decrement('counter', 2)  # -> 13
+
+# Multiply/Divide
+dbcake.db.sum.multiply('counter', 3)   # -> 39
+dbcake.db.sum.divide('counter', 2)     # -> 19.5
+
+# Reset to zero
+dbcake.db.sum.reset('counter')          # -> 0
+
+# Working with lists - min/max/average
+dbcake.db.set('scores', [95, 88, 92, 87, 91])
+print(f"Min: {dbcake.db.sum.min('scores')}")        # -> 87
+print(f"Max: {dbcake.db.sum.max('scores')}")        # -> 95
+print(f"Avg: {dbcake.db.sum.average('scores'):.2f}")  # -> 90.6
+
+# Working with dictionaries
+dbcake.db.set('grades', {'math': 95, 'physics': 88, 'chemistry': 92})
+print(f"Max grade: {dbcake.db.sum.max('grades')}")  # -> 95
 ```
 
-## Storage Formats & Modes
+## 💾 Storage Options
 
-### `store_format` options when creating or switching DB:
-- `binary` — raw bytes (fast)
-- `bits01` — ASCII '0' / '1' bit string
-- `dec` — decimal digits grouped by 3 per byte
-- `hex` — hex representation
-
-Switch format programmatically:
+### Storage Formats
 ```python
+from dbcake import open_db, StoreFormat
+
+# Available formats
+db = open_db("data.dbce", store_format="binary")   # Raw bytes (fastest)
+db = open_db("data.dbce", store_format="hex")      # Hex representation
+db = open_db("data.dbce", store_format="dec")      # Decimal digits
+db = open_db("data.dbce", store_format="bits01")   # ASCII '0'/'1' bits
+
+# Change format at runtime
 dbcake.db.set_format("hex")
 ```
 
-### Switch dataset mode:
+### Storage Modes
 ```python
-dbcake.db.centerilized()   # centralized append-only .dbce
-dbcake.db.decentralized()  # per-key files in .d directory
+from dbcake import open_db, DatasetMode
+
+# Centralized - single append-only file (default)
+db = open_db("data.dbce", dataset="centerilized")
+
+# Decentralized - per-key files in .d directory
+db = open_db("data.dbce", dataset="decentralized")
+
+# Switch modes at runtime
+dbcake.db.centralized()
+dbcake.db.decentralized()
 ```
 
-## Encryption, Passphrases & Key Rotation
+## 🔐 Security & Encryption
 
-`db.encryption_level` controls on-disk security:
-- `db.encryption_level = "low"` — minimal (fast)
-- `db.encryption_level = "normal"` — default (no re-encryption)
-- `db.encryption_level = "high"` — records encrypted before writing (AES-GCM if cryptography is installed; otherwise a fallback)
-
-### Set passphrase (derive key from passphrase):
+### Encryption Levels
 ```python
-dbcake.db.encryption_level = "high"
+import dbcake
+
+# Three security levels
+dbcake.db.encryption_level = "low"     # Fast, minimal encryption
+dbcake.db.encryption_level = "normal"  # Default, balanced
+dbcake.db.encryption_level = "high"    # Maximum security (AES-GCM)
+```
+
+### Passphrase Protection
+```python
+# Set a passphrase (derives key with PBKDF2)
 dbcake.db.set_passphrase("my secret passphrase")
-dbcake.db.set("secret", "value")
+
+# Now all data is encrypted
+dbcake.db.set("secret", "classified information")
+value = dbcake.db.get("secret")  # Automatically decrypted
 ```
 
-Generate/store keyfile (if you do not use passphrase) — DB will generate `.key` next to the DB file.
-
-### Rotate keys (re-encrypt everything):
-**CLI (interactive):**
-```bash
-python dbcake.py db rotate-key mydata.dbce --interactive
-```
-
-**Programmatic:**
+### Keyfile Authentication
 ```python
-dbcake.db.set_passphrase("old")
-dbcake.db.rotate_key(new_passphrase="new")
+# Generate a random keyfile
+dbcake.db.encryption.generate_keyfile()
+
+# Load existing keyfile
+dbcake.db.encryption.load_keyfile()
 ```
 
-`rotate_key` rewrites the DB and re-encrypts records under the new key.
-
-## CLI Usage
-
-The single file exposes a CLI for both local DB, list operations, and the secrets client.
-
-### Local DB commands
-```bash
-# Create file
-python dbcake.py db create mydata.dbce --format binary
-
-# Set key
-python dbcake.py db set mydata.dbce username '"armin"'
-
-# Get key
-python dbcake.py db get mydata.dbce username
-
-# List keys
-python dbcake.py db keys mydata.dbce
-
-# Preview
-python dbcake.py db preview mydata.dbce --limit 5
-
-# Compact (rewrite to keep only current items)
-python dbcake.py db compact mydata.dbce
-
-# Set passphrase (interactive)
-python dbcake.py db set-passphrase mydata.dbce --interactive
-
-# Rotate key (interactive)
-python dbcake.py db rotate-key mydata.dbce --interactive
-
-# Reveal DB file in OS file manager
-python dbcake.py db reveal mydata.dbce
+### Key Rotation
+```python
+# Rotate to new key (re-encrypts all data)
+dbcake.db.set_passphrase("old password")
+dbcake.db.rotate_key(new_passphrase="new password")
 ```
 
-CLI values attempt JSON parsing; unparseable input will be stored as raw string.
+## 📁 File Operations
 
-### List operations (CLI)
-```bash
-# Get list
-python dbcake.py list get mydata.dbce usernames
+### Secure File Manager
+Save and load files with password protection:
 
-# Append to list
-python dbcake.py list append mydata.dbce usernames '"new_user"'
+```python
+import dbcake
 
-# Remove from list
-python dbcake.py list remove mydata.dbce usernames '"armin"'
+# Save data with password
+secret_data = {
+    'username': 'admin',
+    'password': 'supersecret',
+    'api_keys': ['key1', 'key2', 'key3']
+}
+dbcake.db.secure.save("secret.dat", secret_data, password="mypass")
 
-# Clear list
-python dbcake.py list clear mydata.dbce usernames
+# Load data with password
+loaded = dbcake.db.secure.load("secret.dat", password="mypass")
+print(loaded['username'])  # -> 'admin'
+
+# Save as JSON
+dbcake.db.secure.save_json("config.json", secret_data, password="mypass", indent=2)
+
+# Load JSON
+config = dbcake.db.secure.load_json("config.json", password="mypass")
+
+# Save text files
+dbcake.db.secure.save_text("message.txt", "Hello World", password="mypass")
+text = dbcake.db.secure.load_text("message.txt", password="mypass")
 ```
 
-### Secrets HTTP client (CLI)
-```bash
-# Set secret
-python dbcake.py secret set myname "value" --url https://secrets.example.com --api-key S3CR
+## 🔌 Database Connectors
 
-# Get secret (reveal)
-python dbcake.py secret get myname --reveal --url https://secrets.example.com --api-key S3CR
+Connect to various databases with a unified interface:
 
-# List
-python dbcake.py secret list --url https://secrets.example.com --api-key S3CR
+```python
+from dbcake import connector
 
-# Delete
-python dbcake.py secret delete myname --url https://secrets.example.com --api-key S3CR
+# SQLite (built-in, no extra install)
+with connector.sqlite("mydb.sqlite") as conn:
+    conn.execute("CREATE TABLE users (id INT, name TEXT)")
+    conn.execute("INSERT INTO users VALUES (?, ?)", (1, "Armin"))
+    users = conn.query("SELECT * FROM users")
+    for user in users:
+        print(user['id'], user['name'])
+
+# MySQL (requires mysql-connector-python)
+with connector.mysql(
+    host='localhost',
+    user='root',
+    password='',
+    database='test'
+) as conn:
+    conn.execute("INSERT INTO products (name, price) VALUES (%s, %s)", ('Laptop', 999.99))
+    products = conn.query("SELECT * FROM products")
+
+# PostgreSQL (requires psycopg2-binary)
+with connector.postgresql(
+    host='localhost',
+    user='postgres',
+    password='postgres',
+    database='postgres'
+) as conn:
+    conn.execute("CREATE TABLE employees (id SERIAL, name VARCHAR(255))")
+    conn.execute("INSERT INTO employees (name) VALUES (%s)", ('John',))
+
+# MongoDB (requires pymongo)
+with connector.mongodb(
+    host='localhost',
+    port=27017,
+    database='test_db',
+    collection='users'
+) as conn:
+    doc_id = conn.insert({'name': 'Alice', 'age': 30})
+    docs = conn.find({'age': 30})
+
+# Redis (requires redis)
+with connector.redis(
+    host='localhost',
+    port=6379,
+    db=0
+) as conn:
+    conn.set('key', 'value')
+    value = conn.get('key')
+
+# Prisma (requires prisma)
+with connector.prisma(database_url="file:./dev.db") as conn:
+    prisma_client = conn.get_client()
+    # Use prisma_client for ORM operations
 ```
 
-## Secrets HTTP Client (Python)
+## 🌐 Secrets HTTP Client
 
+### Synchronous Client
 ```python
 from dbcake import Client
 
-client = Client("https://secrets.example.com", api_key="S3CR")
-meta = client.set("db_token", "S3cR3tV@lue", tags=["prod","db"])
-secret = client.get("db_token", reveal=True)
-print(secret.value)
+# Create client
+client = Client("https://secrets.example.com", api_key="your-api-key")
 
-# With Fernet (encrypt locally before send)
-from cryptography.fernet import Fernet
-fkey = Fernet.generate_key().decode()
-client2 = Client("https://secrets.example.com", api_key="S3", fernet_key=fkey)
-client2.set("encrypted", "very-secret")
-s = client2.get("encrypted", reveal=True)
-print(s.value)
+# Set a secret
+secret = client.set("db_password", "S3cR3tV@lue", tags=["prod", "database"])
+print(f"Secret created: {secret.name}")
+
+# Get a secret (with value revealed)
+secret = client.get("db_password", reveal=True)
+print(f"Value: {secret.value}")
+
+# Get metadata only
+secret = client.get("db_password", reveal=False)
+print(f"Created: {secret.created_at}")
+print(f"Tags: {secret.tags}")
+
+# Delete a secret
+client.delete("db_password")
 ```
 
-`AsyncClient` is available for async code (`AsyncClient.from_env()` to read env vars).
+### With Client-Side Encryption
+```python
+from dbcake import Client
+from cryptography.fernet import Fernet
 
-**Env vars for convenience:**
-- `DBCAKE_URL`
-- `DBCAKE_API_KEY`
-- `DBCAKE_FERNET_KEY`
+# Generate a Fernet key
+key = Fernet.generate_key().decode()
 
-## Examples
+# Create client with encryption
+client = Client(
+    "https://secrets.example.com",
+    api_key="your-api-key",
+    fernet_key=key
+)
 
-### Complete Example: User Management System
+# Value is encrypted before sending
+client.set("encrypted_secret", "very-sensitive-data")
+
+# Automatically decrypted when retrieved with reveal=True
+secret = client.get("encrypted_secret", reveal=True)
+print(secret.value)  # Decrypted value
+```
+
+### Async Client
+```python
+from dbcake import AsyncClient
+import asyncio
+
+async def main():
+    # Create from environment variables
+    client = AsyncClient.from_env()
+    
+    # Or create manually
+    client = AsyncClient(
+        "https://secrets.example.com",
+        api_key="your-api-key"
+    )
+    
+    # Set secret
+    secret = await client.set("api_key", "sk-123456")
+    
+    # Get secret
+    secret = await client.get("api_key", reveal=True)
+    print(secret.value)
+
+asyncio.run(main())
+```
+
+### Environment Variables
+```bash
+# Set these in your environment
+export DBCAKE_URL="https://secrets.example.com"
+export DBCAKE_API_KEY="your-api-key"
+export DBCAKE_FERNET_KEY="your-fernet-key"
+```
+
+## ⌨️ CLI Usage
+
+### Database Commands
+```bash
+# Create a new database
+python dbcake.py db create mydata.dbce --format binary
+
+# Set a key-value pair
+python dbcake.py db set mydata.dbce username '"armin"'
+
+# Get a value
+python dbcake.py db get mydata.dbce username
+
+# List all keys
+python dbcake.py db keys mydata.dbce
+
+# Preview database contents
+python dbcake.py db preview mydata.dbce --limit 10
+
+# Compact database (remove deleted records)
+python dbcake.py db compact mydata.dbce
+
+# Set encryption passphrase (interactive)
+python dbcake.py db set-passphrase mydata.dbce --interactive
+
+# Rotate encryption key (interactive)
+python dbcake.py db rotate-key mydata.dbce --interactive
+
+# Reconfigure database
+python dbcake.py db reconfigure mydata.dbce --new-path newdata.dbce --format hex
+
+# Reveal database folder in file manager
+python dbcake.py db reveal mydata.dbce
+```
+
+### List Operations (CLI)
+```bash
+# Get a list
+python dbcake.py list get mydata.dbce fruits
+
+# Append to list
+python dbcake.py list append mydata.dbce fruits '"orange"'
+
+# Remove from list
+python dbcake.py list remove mydata.dbce fruits '"apple"'
+
+# Clear list
+python dbcake.py list clear mydata.dbce fruits
+```
+
+### Secrets Client (CLI)
+```bash
+# Set a secret
+python dbcake.py secret set db_password "secret123" --url http://localhost:8000 --api-key your-key
+
+# Get a secret (reveal value)
+python dbcake.py secret get db_password --reveal --url http://localhost:8000 --api-key your-key
+
+# List all secrets
+python dbcake.py secret list --url http://localhost:8000 --api-key your-key
+
+# Delete a secret
+python dbcake.py secret delete db_password --url http://localhost:8000 --api-key your-key
+```
+
+## 📝 Examples
+
+### Complete User Management System
 ```python
 import dbcake
 
@@ -347,138 +609,247 @@ import dbcake
 db = dbcake.open_db("users.dbce")
 
 # Store user profiles
-db.set("user:1", {"name": "Armin", "email": "armin@example.com", "age": 25})
-db.set("user:2", {"name": "Ali", "email": "ali@example.com", "age": 30})
+db.dict['user:1'] = {
+    'name': 'Armin',
+    'email': 'armin@example.com',
+    'age': 25,
+    'preferences': {
+        'theme': 'dark',
+        'notifications': True
+    }
+}
 
-# Store user roles as a list
+db.dict['user:2'] = {
+    'name': 'Ali',
+    'email': 'ali@example.com',
+    'age': 30,
+    'preferences': {
+        'theme': 'light',
+        'notifications': False
+    }
+}
+
+# Store user roles as list
 db.list['roles:1'] = ['admin', 'editor']
-db.list.append('roles:1', 'viewer')
+db.list['roles:2'] = ['viewer']
 
-# Store user permissions as a tuple (immutable)
-db.tuple['permissions:1'] = ('read', 'write', 'delete')
-
-# Store all user IDs in a list
+# Track all user IDs
 db.list['all_users'] = [1, 2]
 
-# Query users over 25
-user_ids = db.list['all_users']
-for user_id in user_ids:
-    user = db.get(f"user:{user_id}")
-    if user and user.get('age', 0) > 25:
-        print(f"User over 25: {user['name']}")
+# Add login counts
+db.sum.add('logins:1', 42)
+db.sum.add('logins:2', 17)
 
-# Remove a role
-db.list.remove('roles:1', 'viewer')
+# Query active users
+for user_id in db.list['all_users']:
+    user = db.dict[f'user:{user_id}']
+    logins = db.sum.get(f'logins:{user_id}')
+    roles = db.list.get(f'roles:{user_id}', default=['guest'])
+    
+    print(f"User: {user['name']}")
+    print(f"  Email: {user['email']}")
+    print(f"  Logins: {logins}")
+    print(f"  Roles: {roles}")
 
-# Get user's permissions
-perms = db.tuple['permissions:1']
-print(f"Permissions: {perms}")
+# Update user preferences
+db.dict['user:1']['preferences']['theme'] = 'light'
 
-# Add a new user
-db.list.append('all_users', 3)
-db.set("user:3", {"name": "Mahsa", "email": "mahsa@example.com", "age": 28})
+# Add new user
+new_id = 3
+db.list.append('all_users', new_id)
+db.dict[f'user:{new_id}'] = {'name': 'Mahsa', 'email': 'mahsa@example.com', 'age': 28}
+db.list[f'roles:{new_id}'] = ['editor']
+db.sum.set(f'logins:{new_id}', 0)
+
+# Compact database periodically
+db.compact()
 ```
 
-### Example: Todo List Application
+### Todo List Application
+```python
+import dbcake
+from datetime import datetime
+
+class TodoApp:
+    def __init__(self, db_path="todos.dbce"):
+        self.db = dbcake.open_db(db_path)
+        if not self.db.list.get('todos'):
+            self.db.list['todos'] = []
+        if not self.db.sum.get('next_id'):
+            self.db.sum.set('next_id', 1)
+    
+    def add_todo(self, task, priority='medium'):
+        todo_id = int(self.db.sum.increment('next_id') - 1)
+        todo = {
+            'id': todo_id,
+            'task': task,
+            'priority': priority,
+            'completed': False,
+            'created': datetime.now().isoformat()
+        }
+        self.db.list.append('todos', todo)
+        print(f"Added todo #{todo_id}: {task}")
+        return todo_id
+    
+    def list_todos(self, show_completed=False):
+        todos = self.db.list['todos']
+        if not show_completed:
+            todos = [t for t in todos if not t['completed']]
+        
+        print(f"\n📋 Todos ({len(todos)}):")
+        for todo in todos:
+            status = "✅" if todo['completed'] else "⬜"
+            print(f"  {status} #{todo['id']}: {todo['task']} ({todo['priority']})")
+    
+    def complete_todo(self, todo_id):
+        todos = self.db.list['todos']
+        for todo in todos:
+            if todo['id'] == todo_id:
+                todo['completed'] = True
+                todo['completed_at'] = datetime.now().isoformat()
+                self.db.list['todos'] = todos
+                print(f"Completed todo #{todo_id}")
+                return True
+        print(f"Todo #{todo_id} not found")
+        return False
+    
+    def delete_completed(self):
+        todos = self.db.list['todos']
+        active = [t for t in todos if not t['completed']]
+        deleted = len(todos) - len(active)
+        self.db.list['todos'] = active
+        print(f"Deleted {deleted} completed todos")
+        return deleted
+    
+    def stats(self):
+        todos = self.db.list['todos']
+        completed = len([t for t in todos if t['completed']])
+        total = len(todos)
+        
+        priorities = {'high': 0, 'medium': 0, 'low': 0}
+        for todo in todos:
+            if not todo['completed']:
+                priorities[todo['priority']] += 1
+        
+        print(f"\n📊 Statistics:")
+        print(f"  Total todos: {total}")
+        print(f"  Completed: {completed}")
+        print(f"  Active: {total - completed}")
+        print(f"  By priority (active):")
+        print(f"    🔴 High: {priorities['high']}")
+        print(f"    🟡 Medium: {priorities['medium']}")
+        print(f"    🟢 Low: {priorities['low']}")
+
+# Usage
+app = TodoApp()
+app.add_todo("Learn Python", "high")
+app.add_todo("Build a project", "medium")
+app.add_todo("Write documentation", "low")
+app.list_todos()
+app.complete_todo(1)
+app.stats()
+```
+
+### Configuration Manager
 ```python
 import dbcake
 
-db = dbcake.open_db("todos.dbce")
+class ConfigManager:
+    def __init__(self, app_name):
+        self.db = dbcake.open_db(f"{app_name}_config.dbce")
+        self.app_name = app_name
+    
+    def get(self, key, default=None):
+        return self.db.dict.get_field('config', key, default)
+    
+    def set(self, key, value):
+        self.db.dict.set_field('config', key, value)
+    
+    def update(self, **kwargs):
+        self.db.dict.update('config', **kwargs)
+    
+    def export(self, filepath, password=None):
+        config = self.db.dict['config']
+        self.db.secure.save_json(filepath, config, password=password, indent=2)
+    
+    def import_config(self, filepath, password=None):
+        config = self.db.secure.load_json(filepath, password=password)
+        self.db.dict['config'] = config
 
-# Initialize todos list
-db.list['todos'] = [
-    {"id": 1, "task": "Learn Python", "done": True},
-    {"id": 2, "task": "Build a project", "done": False}
-]
+# Usage
+config = ConfigManager("myapp")
+config.set("theme", "dark")
+config.set("language", "en")
+config.update(notifications=True, autosave=True, max_items=100)
 
-# Add new todo
-db.list.append('todos', {"id": 3, "task": "Learn dbcake", "done": False})
+print(f"Theme: {config.get('theme')}")
+print(f"All settings: {config.db.dict['config']}")
 
-# Mark todo as done
-todos = db.list['todos']
-for i, todo in enumerate(todos):
-    if todo['task'] == "Build a project":
-        todo['done'] = True
-        db.list['todos'] = todos  # Update the list
-        break
-
-# Remove completed todos
-todos = [todo for todo in db.list['todos'] if not todo['done']]
-db.list['todos'] = todos
-
-# Get active todos
-active_todos = db.list['todos']
-print(f"Active todos: {len(active_todos)}")
+# Export with encryption
+config.export("config.json.enc", password="secure123")
 ```
 
-## Security Notes
+## 🔧 Troubleshooting
 
-1. **Passphrase Security**:
-   - If you use `db.set_passphrase("...")`, a salt file (`.salt`) is created and used to derive an encryption key
-   - Keep passphrases secret and never commit them to version control
+### Common Issues and Solutions
 
-2. **Keyfile Security**:
-   - If you don't set a passphrase, the DB generates a `.key` keyfile next to the DB
-   - Keep that file safe and never commit it to version control
-   - Consider using `.gitignore` to exclude `*.key` and `*.salt` files
+#### 1. **ImportError: No module named 'cryptography'**
+```python
+# This is fine! dbcake uses a secure fallback
+# To install cryptography for better encryption:
+pip install cryptography
+```
 
-3. **Network Security**:
-   - Use TLS for server communication (HTTPS) and protect API keys
-   - Never transmit sensitive data over unencrypted connections
+#### 2. **"Failed to connect to secrets server"**
+```python
+# Make sure your server is running
+# For testing, you can use the example server:
+from http.server import HTTPServer, BaseHTTPRequestHandler
+# (see documentation for complete example)
+```
 
-4. **Key Rotation**:
-   - Use `rotate_key` regularly for long-lived data
-   - Consider rotating keys when team members leave or credentials are compromised
+#### 3. **Database file is corrupted**
+```python
+# dbcake automatically skips corrupted records
+# To recover, you can:
+db = dbcake.open_db("corrupted.dbce")
+db.compact()  # Rewrites only valid records
+```
 
-5. **Use Cases**:
-   - This project is intended for learning, quick prototypes, and small projects
-   - For production secrets management, consider hardened solutions (HashiCorp Vault, AWS KMS/Secrets Manager, etc.)
+#### 4. **Permission denied when writing files**
+```python
+# Check file permissions
+# Use absolute paths or ensure write access to directory
+db = dbcake.open_db("/path/with/write/permissions/data.dbce")
+```
 
-## Troubleshooting
+#### 5. **KeyError when accessing dictionary**
+```python
+# Always check if key exists
+if 'user' in dbcake.db.dict:
+    print(dbcake.db.dict['user']['name'])
 
-### Common Issues:
+# Or use get() with default
+name = dbcake.db.dict.get_field('user', 'name', default='Guest')
+```
 
-1. **`cryptography` not installed**:
-   - AES-GCM and Fernet features disabled
-   - Library will use a secure fallback
-   - Install cryptography: `pip install cryptography`
-
-2. **`tkinter` missing**:
-   - GUI installer will not run
-   - Install system package:
-     - Ubuntu/Debian: `sudo apt-get install python3-tk`
-     - macOS: Comes with Python from python.org
-     - Windows: Usually installed with Python
-
-3. **Lock timeouts**:
-   - Another process may hold the DB
-   - Wait or increase timeout
-   - Ensure only compatible writers access the DB
-
-4. **Permission errors**:
-   - Ensure the process can write to DB folder and key/salt files
-   - Check file permissions and ownership
-
-5. **List operations not working**:
-   - Ensure you're using `db.list` for list operations, not `db.get/set` directly
-   - Lists stored with `db.set()` can be accessed with `db.list[]`
-
-### Debug Mode:
-To see what's happening internally, you can enable debug logging:
+### Debug Mode
 ```python
 import logging
 logging.basicConfig(level=logging.DEBUG)
+# Now dbcake will show detailed operation logs
 ```
 
----
+## 📄 License
 
-## License & Contribution
+MIT License - feel free to use in personal and commercial projects.
 
-dbcake is released as open-source software. Feel free to use, modify, and distribute as needed.
+## 🤝 Contributing
 
-For issues, feature requests, or contributions, please refer to the project repository.
+Contributions are welcome! Please feel free to submit a Pull Request.
 
----
+## ⭐ Support
 
-**Happy coding with dbcake!** 🍰
->[!CAUTION]
+If you find dbcake useful, please give it a star on GitHub!
+
+**Happy coding with dbcake!** 
