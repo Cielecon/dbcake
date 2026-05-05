@@ -14,7 +14,7 @@
 
 `dbcake` is Python module that requires **zero dependencies** (optional packages for advanced features). Just drop the single file into your project and start using your favorite database now!
 
-___⭐ +200 devices,servers are using DBcake join now!___
+___⭐ +200 devices, servers, bot's are using DBcake join now!___
 
 ## Contacts
 
