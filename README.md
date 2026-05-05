@@ -2,7 +2,7 @@
 
 # 🍰 dbcake v1.4.3
 
-*Today, We all always needed to learn DB! But is it too hard duh :(*
+*Today, We all always need to learn DB! But is it too hard duh :(*
   
 **BUT WE ARE HERE!**
 
