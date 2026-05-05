@@ -398,7 +398,7 @@ dbcake.db.secure.save_text("message.txt", "Hello World", password="mypass")
 text = dbcake.db.secure.load_text("message.txt", password="mypass")
 ```
 
-## 🔌 Database Connectors
+## Database Connectors
 
 Connect to various databases with a unified interface:
 
@@ -540,7 +540,7 @@ export DBCAKE_API_KEY="your-api-key"
 export DBCAKE_FERNET_KEY="your-fernet-key"
 ```
 
-## ⌨️ CLI Usage
+## CLI Usage
 
 ### Database Commands
 ```bash
