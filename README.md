@@ -2,13 +2,19 @@
 
 # 🍰 dbcake v1.4.3
 
+*Today, We all always needed to learn DB! But is it too hard duh :(*
+  
+**BUT WE ARE HERE!**
+
 **Use your easiest DataBase In any time, Everywhere**
 
 [![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.4.3-orange.svg)]()
 
-`dbcake.py` is a self-contained Python module that requires **zero dependencies** (optional packages for advanced features). Just drop the single file into your project and start using it!
+`dbcake` is Python module that requires **zero dependencies** (optional packages for advanced features). Just drop the single file into your project and start using your favorite database now!
+
+___⭐ +200 devices,servers are using DBcake join now!___
 
 ## Contacts
 
@@ -31,7 +37,7 @@
 - [Troubleshooting](#-troubleshooting)
 - [License](#-license)
 
-## ✨ Features
+## Features
 
 - **Single File** - Drop `dbcake.py` into any project, no installation needed
 - **Multiple Data Types** - Store strings, numbers, lists, tuples, dictionaries, and any Python object
@@ -48,7 +54,7 @@
 - **CLI Interface** - Full command-line control
 - **Data Persistence** - Your data survives library updates
 
-## 🚀 Quick Start
+## Quick Start
 
 1. **Save `dbcake.py`** into your project folder
 
@@ -76,7 +82,7 @@ dbcake.db.dict['user'] = {'name': 'Armin', 'age': 25}
 print(dbcake.db.dict['user']['name'])  # -> 'Armin'
 ```
 
-## 📦 Installation
+## Installation
 
 ### Option 1: Direct Download (Recommended)
 ```bash
@@ -104,7 +110,7 @@ pip install redis                    # Redis
 pip install prisma                   # Prisma
 ```
 
-## 🎯 Basic Usage
+## Basic Usage
 
 ### Module-level Convenience DB
 ```python
@@ -146,7 +152,7 @@ db.set("key", "value")
 value = db.get("key")
 ```
 
-## 📊 Data Structures
+## Data Structures
 
 ### Dictionary Manager
 Work with dictionaries like native Python objects:
@@ -292,7 +298,7 @@ dbcake.db.set('grades', {'math': 95, 'physics': 88, 'chemistry': 92})
 print(f"Max grade: {dbcake.db.sum.max('grades')}")  # -> 95
 ```
 
-## 💾 Storage Options
+## Storage Options
 
 ### Storage Formats
 ```python
@@ -323,7 +329,7 @@ dbcake.db.centralized()
 dbcake.db.decentralized()
 ```
 
-## 🔐 Security & Encryption
+## Security & Encryption
 
 ### Encryption Levels
 ```python
@@ -361,7 +367,7 @@ dbcake.db.set_passphrase("old password")
 dbcake.db.rotate_key(new_passphrase="new password")
 ```
 
-## 📁 File Operations
+## File Operations
 
 ### Secure File Manager
 Save and load files with password protection:
@@ -452,7 +458,7 @@ with connector.prisma(database_url="file:./dev.db") as conn:
     # Use prisma_client for ORM operations
 ```
 
-## 🌐 Secrets HTTP Client
+## Secrets HTTP Client
 
 ### Synchronous Client
 ```python
@@ -599,7 +605,7 @@ python dbcake.py secret list --url http://localhost:8000 --api-key your-key
 python dbcake.py secret delete db_password --url http://localhost:8000 --api-key your-key
 ```
 
-## 📝 Examples
+## Examples
 
 ### Complete User Management System
 ```python
@@ -789,7 +795,7 @@ print(f"All settings: {config.db.dict['config']}")
 config.export("config.json.enc", password="secure123")
 ```
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### Common Issues and Solutions
 
@@ -839,7 +845,6 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 # Now dbcake will show detailed operation logs
 ```
-
 ## 📄 License
 
 MIT License - feel free to use in personal and commercial projects.
