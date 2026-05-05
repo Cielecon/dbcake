@@ -39,20 +39,20 @@ ___⭐ +200 devices,servers are using DBcake join now!___
 
 ## Features
 
-- **Single File** - Drop `dbcake.py` into any project, no installation needed
+- **Single File**! Drop `dbcake.py` into any project, no installation needed
 - **Multiple Data Types** - Store strings, numbers, lists, tuples, dictionaries, and any Python object
 - **Dictionary Manager** - Native dictionary operations with nested access
-- **List/Tuple Support** - Append, remove, pop, extend like native Python lists
-- **Sum Manager** - Built-in arithmetic operations (add, subtract, multiply, divide)
-- **Multiple Storage Formats**: `binary | bits01 | dec | hex`
-- **Encryption Modes**: `low | normal | high` (AES-GCM when available)
-- **Two Storage Modes**: Centralized (single file) or Decentralized (per-key files)
-- **Key Rotation** - Re-encrypt all data with new keys
-- **File Locking** - Safe for multi-process access
-- **Database Connectors** - MySQL, SQLite, PostgreSQL, MongoDB, Redis, Prisma
-- **Secrets Client** - HTTP client for remote secrets API
-- **CLI Interface** - Full command-line control
-- **Data Persistence** - Your data survives library updates
+- **List and Tuple Support** Actually tou can Append, remove, pop, extend like native Python lists
+- **Sum Manager** Built-in arithmetic operations like add, subtract, multiply, divide!
+- **Multiple Storage Formats** have access on `binary | bits01 | dec | hex`
+- **Encryption Modes**: `low | normal | high` AES-GCM when available
+- **Two Storage Modes**: Centralized single file or Decentralized per-key files
+- **Key Rotation** like Re-encrypt all data with new keys
+- **File Locking**! Safe for multi-process access
+- **Database Connectors** have Connection with MySQL, SQLite, PostgreSQL, MongoDB, Redis, Prisma
+- **Secrets Client** have access HTTP client for remote secrets API
+- **CLI Interface**! Full command-line control
+- **Data Persistence** Your data survives library updates
 
 ## Quick Start
 
