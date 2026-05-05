@@ -2,7 +2,7 @@
 
 # 🍰 dbcake v1.4.3
 
-**Single-file, easy-to-use key/value database + secrets client with list/tuple/dictionary support for learning, quick prototypes, and small projects.**
+**Use your easiest DataBase In any time, Everywhere**
 
 [![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -10,7 +10,7 @@
 
 `dbcake.py` is a self-contained Python module that requires **zero dependencies** (optional packages for advanced features). Just drop the single file into your project and start using it!
 
-## 📚 Table of Contents
+## Contacts
 
 - [Features](#-features)
 - [Quick Start](#-quick-start)
