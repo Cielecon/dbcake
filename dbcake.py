@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-dbcake — single-file, easy-to-use key/value database + secrets client.
-Version: 1.5.1
-Author: dbcake
-"""
-
 import os
 import sys
 import json
