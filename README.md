@@ -590,6 +590,8 @@ python dbcake.py list remove mydata.dbce fruits '"apple"'
 python dbcake.py list clear mydata.dbce fruits
 ```
 
+Actually, right now you can call dbcake with ```dbcake``` on CLI instead of calling with python on **Windows**! We will add this for Linux later.
+
 ### Secrets Client (CLI)
 ```bash
 # Set a secret
