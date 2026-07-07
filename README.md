@@ -10,7 +10,7 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.4.3-orange.svg)]()
+[![Version](https://img.shields.io/badge/version-1.4.4-orange.svg)]()
 
 `dbcake` is Python module that requires **zero dependencies** (optional packages for advanced features). Just drop the single file into your project and start using your favorite database now!
 
