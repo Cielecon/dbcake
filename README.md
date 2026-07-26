@@ -61,7 +61,7 @@ ___⭐ +200 devices, servers, bot's are using DBcake join now!___
 pip install dbcake
 ```
 
-3. **You're set!**
+3. **You're all set!**
 
 ```python
 import dbcake
