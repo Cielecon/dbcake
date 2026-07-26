@@ -56,9 +56,12 @@ ___⭐ +200 devices, servers, bot's are using DBcake join now!___
 
 ## Quick Start
 
-1. **Save `dbcake.py`** into your project folder
+1. **Download DBcake with pip**
+```bash
+pip install dbcake
+```
 
-2. **Start using it:**
+3. **You're set!**
 
 ```python
 import dbcake
